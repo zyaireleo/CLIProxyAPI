@@ -18,6 +18,27 @@ import (
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
+type pluginSchedulerDirectResponseError struct{}
+
+func (pluginSchedulerDirectResponseError) Error() string   { return "all credentials cooling down" }
+func (pluginSchedulerDirectResponseError) StatusCode() int { return http.StatusTooManyRequests }
+func (pluginSchedulerDirectResponseError) ResponseHeaders() http.Header {
+	return http.Header{"Retry-After": {"23"}}
+}
+func (pluginSchedulerDirectResponseError) ResponseBody() []byte {
+	return []byte(`{"error":{"code":"model_cooldown"}}`)
+}
+
+func TestExecutionErrorMessagePreservesPluginSchedulerDirectResponse(t *testing.T) {
+	message := ExecutionErrorMessage(pluginSchedulerDirectResponseError{})
+	if message == nil || !message.DirectResponse || message.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("message = %#v", message)
+	}
+	if message.Headers.Get("Retry-After") != "23" || string(message.Body) != `{"error":{"code":"model_cooldown"}}` {
+		t.Fatalf("direct response = headers %#v body %s", message.Headers, message.Body)
+	}
+}
+
 func TestWriteErrorResponse_AddonHeadersDisabledByDefault(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

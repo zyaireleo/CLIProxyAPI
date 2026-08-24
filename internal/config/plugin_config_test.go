@@ -176,6 +176,27 @@ plugins:
 	}
 }
 
+func TestParseConfigBytes_PluginRequiredSchedulerProviders(t *testing.T) {
+	cfg, errParse := ParseConfigBytes([]byte(`
+plugins:
+  enabled: true
+  configs:
+    quota-guard:
+      enabled: true
+      priority: 100
+      required-scheduler-for:
+        - Antigravity
+        - antigravity
+`))
+	if errParse != nil {
+		t.Fatal(errParse)
+	}
+	plugin := cfg.Plugins.Configs["quota-guard"]
+	if len(plugin.RequiredSchedulerFor) != 1 || plugin.RequiredSchedulerFor[0] != "antigravity" {
+		t.Fatalf("required scheduler providers = %#v", plugin.RequiredSchedulerFor)
+	}
+}
+
 func TestSaveConfigPreserveComments_PrunesDefaultPluginsDir(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if errWrite := os.WriteFile(configPath, []byte("debug: true\n"), 0o600); errWrite != nil {

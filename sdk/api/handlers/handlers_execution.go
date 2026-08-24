@@ -322,6 +322,21 @@ func executionErrorMessage(err error) *interfaces.ErrorMessage {
 			Headers:        terminated.ResponseHeaders(),
 		}
 	}
+	type directResponseError interface {
+		StatusCode() int
+		ResponseHeaders() http.Header
+		ResponseBody() []byte
+	}
+	var direct directResponseError
+	if errors.As(err, &direct) && direct != nil && (len(direct.ResponseHeaders()) > 0 || len(direct.ResponseBody()) > 0) {
+		return &interfaces.ErrorMessage{
+			StatusCode:     normalizedTerminationStatus(direct.StatusCode()),
+			Error:          err,
+			DirectResponse: true,
+			Body:           direct.ResponseBody(),
+			Headers:        direct.ResponseHeaders(),
+		}
+	}
 	status := http.StatusInternalServerError
 	if code := clienterror.HTTPStatusFromError(err); code > 0 {
 		status = code

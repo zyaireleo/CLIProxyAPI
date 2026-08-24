@@ -82,6 +82,31 @@ func TestHostAuthListCallbackUsesAuthManager(t *testing.T) {
 	}
 }
 
+func TestHostAuthListPublishesInventoryReadiness(t *testing.T) {
+	host := New()
+	host.SetAuthManager(coreauth.NewManager(nil, nil, nil))
+
+	decode := func() rpcHostAuthListResponse {
+		raw, err := host.callHostAuthList(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := decodeRPCEnvelope[rpcHostAuthListResponse](raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+
+	if response := decode(); response.InventoryReady {
+		t.Fatalf("inventory_ready=%v before initial auth load, want false", response.InventoryReady)
+	}
+	host.SetAuthInventoryReady(true)
+	if response := decode(); !response.InventoryReady {
+		t.Fatalf("inventory_ready=%v after initial auth load, want true", response.InventoryReady)
+	}
+}
+
 func TestHostAuthGetCallbackReturnsPhysicalJSONByAuthIndex(t *testing.T) {
 	authDir := t.TempDir()
 	path := filepath.Join(authDir, "demo-b.json")

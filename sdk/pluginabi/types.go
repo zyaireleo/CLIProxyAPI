@@ -1,6 +1,9 @@
 package pluginabi
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"net/http"
+)
 
 const (
 	// ABIVersion tracks the native C ABI shape (native plugin exports).
@@ -14,6 +17,13 @@ const (
 	// SchemaVersionStreamChunkOmitRequestBody is the first schema version that omits
 	// request bodies on payload stream-chunk interceptor calls.
 	SchemaVersionStreamChunkOmitRequestBody uint32 = 3
+)
+
+const (
+	HostFeatureRequiredSchedulerV1       = "required_scheduler_v1"
+	HostFeatureSchedulerRequestIDV1      = "scheduler_request_id_v1"
+	HostFeatureSchedulerDirectResponseV1 = "scheduler_direct_response_v1"
+	HostFeatureAuthInventoryReadyV1      = "auth_inventory_ready_v1"
 )
 
 const (
@@ -92,8 +102,10 @@ type Envelope struct {
 }
 
 type Error struct {
-	Code       string `json:"code"`
-	Message    string `json:"message"`
-	Retryable  bool   `json:"retryable,omitempty"`
-	HTTPStatus int    `json:"http_status,omitempty"`
+	Code            string      `json:"code"`
+	Message         string      `json:"message"`
+	Retryable       bool        `json:"retryable,omitempty"`
+	HTTPStatus      int         `json:"http_status,omitempty"`
+	ResponseHeaders http.Header `json:"response_headers,omitempty"`
+	ResponseBody    []byte      `json:"response_body,omitempty"`
 }

@@ -75,10 +75,19 @@ func (s *Service) Run(ctx context.Context) error {
 
 	s.registerPluginAuthParser()
 	if s.coreManager != nil && !homeEnabled {
+		if s.pluginHost != nil {
+			s.pluginHost.SetAuthManager(s.coreManager)
+			s.pluginHost.SetAuthInventoryReady(false)
+		}
+		authInventoryLoaded := true
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
+			authInventoryLoaded = false
 			log.Warnf("failed to load auth store: %v", errLoad)
 		}
 		s.registerConfigAPIKeyAuths(coreauth.WithSkipPersist(ctx), s.cfg)
+		if s.pluginHost != nil && authInventoryLoaded && ctx.Err() == nil {
+			s.pluginHost.SetAuthInventoryReady(true)
+		}
 		if s.cfg.SaveCooldownStatus {
 			if errRestoreCooldown := s.coreManager.RestoreCooldownStates(ctx); errRestoreCooldown != nil {
 				log.Warnf("failed to restore cooldown state: %v", errRestoreCooldown)

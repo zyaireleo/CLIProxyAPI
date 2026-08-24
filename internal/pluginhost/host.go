@@ -66,6 +66,7 @@ type Host struct {
 	cleanupFilesPending    bool
 	runtimeConfig          *config.Config
 	authManager            *coreauth.Manager
+	authInventoryReady     bool
 	modelExecutor          modelExecutor
 	modelClientIDs         map[string]struct{}
 	executorModelClientIDs map[string]struct{}

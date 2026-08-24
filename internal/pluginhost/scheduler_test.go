@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -182,7 +183,7 @@ func TestHostPickAuthPrefersValidAuthIDOverInvalidDelegate(t *testing.T) {
 }
 
 func TestHostPickAuthAllowsKnownBuiltinDelegates(t *testing.T) {
-	for _, delegate := range []string{pluginapi.SchedulerBuiltinRoundRobin, pluginapi.SchedulerBuiltinFillFirst} {
+	for _, delegate := range []string{pluginapi.SchedulerBuiltinConfigured, pluginapi.SchedulerBuiltinRoundRobin, pluginapi.SchedulerBuiltinFillFirst} {
 		t.Run(delegate, func(t *testing.T) {
 			host := newHostWithRecords(capabilityRecord{
 				id: "scheduler",
@@ -200,6 +201,128 @@ func TestHostPickAuthAllowsKnownBuiltinDelegates(t *testing.T) {
 			}
 			if resp.DelegateBuiltin != delegate {
 				t.Fatalf("PickAuth() DelegateBuiltin = %q, want %q", resp.DelegateBuiltin, delegate)
+			}
+		})
+	}
+}
+
+func TestHostRequiredSchedulerReadiness(t *testing.T) {
+	enabled := true
+	disabled := false
+	scheduler := func(id string, priority int) capabilityRecord {
+		return capabilityRecord{
+			id:       id,
+			priority: priority,
+			plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{Scheduler: schedulerFunc(func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
+				return pluginapi.SchedulerPickResponse{Handled: true, AuthID: "auth-a"}, nil
+			})}},
+		}
+	}
+	configure := func(host *Host) {
+		host.runtimeConfig = &config.Config{Plugins: config.PluginsConfig{
+			Enabled: true,
+			Configs: map[string]config.PluginInstanceConfig{
+				"quota-guard": {
+					Enabled:              &enabled,
+					RequiredSchedulerFor: []string{"antigravity"},
+				},
+			},
+		}}
+	}
+
+	tests := []struct {
+		name         string
+		records      []capabilityRecord
+		fuseGuard    bool
+		provider     string
+		providers    []string
+		wantRequired bool
+		wantReady    bool
+		wantPluginID string
+		disabled     bool
+		globalOff    bool
+	}{
+		{
+			name:         "configured but missing",
+			provider:     "antigravity",
+			wantRequired: true,
+			wantPluginID: "quota-guard",
+		},
+		{
+			name:         "disabled but still required",
+			disabled:     true,
+			provider:     "antigravity",
+			wantRequired: true,
+			wantPluginID: "quota-guard",
+		},
+		{
+			name:         "global plugins disabled but marker still required",
+			globalOff:    true,
+			provider:     "antigravity",
+			wantRequired: true,
+			wantPluginID: "quota-guard",
+		},
+		{
+			name:         "required scheduler uniquely active",
+			records:      []capabilityRecord{scheduler("quota-guard", 10)},
+			provider:     "antigravity",
+			wantRequired: true,
+			wantReady:    true,
+			wantPluginID: "quota-guard",
+		},
+		{
+			name:         "second scheduler makes ownership ambiguous",
+			records:      []capabilityRecord{scheduler("quota-guard", 10), scheduler("other", 20)},
+			provider:     "antigravity",
+			wantRequired: true,
+			wantPluginID: "quota-guard",
+		},
+		{
+			name:         "required scheduler fused",
+			records:      []capabilityRecord{scheduler("quota-guard", 10)},
+			fuseGuard:    true,
+			provider:     "antigravity",
+			wantRequired: true,
+			wantPluginID: "quota-guard",
+		},
+		{
+			name:         "mixed route containing required provider",
+			records:      []capabilityRecord{scheduler("quota-guard", 10)},
+			provider:     "mixed",
+			providers:    []string{"gemini", "antigravity"},
+			wantRequired: true,
+			wantReady:    true,
+			wantPluginID: "quota-guard",
+		},
+		{
+			name:      "unrelated provider",
+			records:   []capabilityRecord{scheduler("quota-guard", 10)},
+			provider:  "gemini",
+			wantReady: false,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			host := newHostWithRecords(testCase.records...)
+			configure(host)
+			if testCase.disabled {
+				item := host.runtimeConfig.Plugins.Configs["quota-guard"]
+				item.Enabled = &disabled
+				host.runtimeConfig.Plugins.Configs["quota-guard"] = item
+			}
+			if testCase.globalOff {
+				host.runtimeConfig.Plugins.Enabled = false
+			}
+			if testCase.fuseGuard {
+				host.mu.Lock()
+				host.fused["quota-guard"] = "test fuse"
+				host.mu.Unlock()
+			}
+
+			pluginID, required, ready := host.RequiredScheduler(testCase.provider, testCase.providers)
+			if pluginID != testCase.wantPluginID || required != testCase.wantRequired || ready != testCase.wantReady {
+				t.Fatalf("RequiredScheduler() = (%q, %t, %t), want (%q, %t, %t)", pluginID, required, ready, testCase.wantPluginID, testCase.wantRequired, testCase.wantReady)
 			}
 		})
 	}

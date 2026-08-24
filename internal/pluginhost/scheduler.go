@@ -2,6 +2,7 @@ package pluginhost
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -32,6 +33,74 @@ func (h *Host) PickAuth(ctx context.Context, req pluginapi.SchedulerPickRequest)
 
 func (h *Host) HasScheduler() bool {
 	return h.schedulerRecord() != nil
+}
+
+// RequiredScheduler reports whether the configured route requires one exact,
+// uniquely active scheduler plugin. The requirement is retained from config
+// even when the plugin failed to load or became fused, allowing the auth
+// manager to fail closed instead of silently selecting through built-ins.
+func (h *Host) RequiredScheduler(provider string, providers []string) (pluginID string, required bool, ready bool) {
+	if h == nil {
+		return "", false, false
+	}
+	routeProviders := schedulerRouteProviderSet(provider, providers)
+	if len(routeProviders) == 0 {
+		return "", false, false
+	}
+
+	h.mu.Lock()
+	requiredIDs := make([]string, 0)
+	if h.runtimeConfig != nil {
+		for id, item := range h.runtimeConfig.Plugins.Configs {
+			// The host-owned requirement is independent from plugin enablement.
+			// Disabling or unloading a still-required scheduler must fail closed;
+			// operators remove required-scheduler-for explicitly to retire it.
+			if !providerListsIntersect(item.RequiredSchedulerFor, routeProviders) {
+				continue
+			}
+			requiredIDs = append(requiredIDs, strings.TrimSpace(id))
+		}
+	}
+	h.mu.Unlock()
+	if len(requiredIDs) == 0 {
+		return "", false, false
+	}
+	sort.Strings(requiredIDs)
+	if len(requiredIDs) != 1 || requiredIDs[0] == "" {
+		return strings.Join(requiredIDs, ","), true, false
+	}
+
+	activeSchedulerIDs := make([]string, 0)
+	for _, record := range h.activeRecords() {
+		if record.plugin.Capabilities.Scheduler != nil && !h.isPluginFused(record.id) {
+			activeSchedulerIDs = append(activeSchedulerIDs, record.id)
+		}
+	}
+	return requiredIDs[0], true, len(activeSchedulerIDs) == 1 && activeSchedulerIDs[0] == requiredIDs[0]
+}
+
+func schedulerRouteProviderSet(provider string, providers []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(providers)+1)
+	add := func(value string) {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != "" && value != "mixed" {
+			out[value] = struct{}{}
+		}
+	}
+	add(provider)
+	for _, value := range providers {
+		add(value)
+	}
+	return out
+}
+
+func providerListsIntersect(configured []string, route map[string]struct{}) bool {
+	for _, provider := range configured {
+		if _, ok := route[strings.ToLower(strings.TrimSpace(provider))]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Host) schedulerRecord() *capabilityRecord {
@@ -103,7 +172,7 @@ func schedulerCandidateExists(candidates []pluginapi.SchedulerAuthCandidate, aut
 
 func validSchedulerBuiltin(delegate string) bool {
 	switch delegate {
-	case pluginapi.SchedulerBuiltinRoundRobin, pluginapi.SchedulerBuiltinFillFirst:
+	case pluginapi.SchedulerBuiltinConfigured, pluginapi.SchedulerBuiltinRoundRobin, pluginapi.SchedulerBuiltinFillFirst:
 		return true
 	default:
 		return false

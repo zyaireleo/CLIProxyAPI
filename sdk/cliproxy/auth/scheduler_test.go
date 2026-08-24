@@ -10,6 +10,7 @@ import (
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -64,12 +65,15 @@ func (schedulerTestExecutor) HttpRequest(ctx context.Context, auth *Auth, req *h
 }
 
 type fakePluginScheduler struct {
-	resp     pluginapi.SchedulerPickResponse
-	handled  bool
-	err      error
-	calls    int
-	requests []pluginapi.SchedulerPickRequest
-	pick     func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error)
+	resp             pluginapi.SchedulerPickResponse
+	handled          bool
+	err              error
+	calls            int
+	requests         []pluginapi.SchedulerPickRequest
+	pick             func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error)
+	requiredPluginID string
+	required         bool
+	ready            bool
 }
 
 func (s *fakePluginScheduler) PickAuth(ctx context.Context, req pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error) {
@@ -79,6 +83,10 @@ func (s *fakePluginScheduler) PickAuth(ctx context.Context, req pluginapi.Schedu
 		return s.pick(ctx, req)
 	}
 	return s.resp, s.handled, s.err
+}
+
+func (s *fakePluginScheduler) RequiredScheduler(string, []string) (string, bool, bool) {
+	return s.requiredPluginID, s.required, s.ready
 }
 
 type inactivePluginScheduler struct {
@@ -673,7 +681,8 @@ func TestManagerPluginSchedulerSelectsAuthID(t *testing.T) {
 	}
 	manager.SetPluginScheduler(scheduler)
 
-	got, _, errPick := manager.pickNext(context.Background(), "gemini", "", cliproxyexecutor.Options{Stream: true}, nil)
+	ctx := logging.WithRequestID(context.Background(), "request-123")
+	got, _, errPick := manager.pickNext(ctx, "gemini", "", cliproxyexecutor.Options{Stream: true}, nil)
 	if errPick != nil {
 		t.Fatalf("pickNext() error = %v", errPick)
 	}
@@ -691,6 +700,93 @@ func TestManagerPluginSchedulerSelectsAuthID(t *testing.T) {
 	}
 	if !scheduler.requests[0].Stream {
 		t.Fatalf("scheduler request Stream = false, want true")
+	}
+	if scheduler.requests[0].RequestID != "request-123" {
+		t.Fatalf("scheduler request ID = %q, want request-123", scheduler.requests[0].RequestID)
+	}
+}
+
+func TestManagerRequiredSchedulerFailsClosedWhenUnavailableOrDeclines(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		ready   bool
+		handled bool
+	}{
+		{name: "unavailable", ready: false, handled: false},
+		{name: "declines", ready: true, handled: false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			manager := NewManager(nil, &RoundRobinSelector{}, nil)
+			manager.executors["antigravity"] = schedulerTestExecutor{}
+			if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-a", Provider: "antigravity"}); errRegister != nil {
+				t.Fatal(errRegister)
+			}
+			scheduler := &fakePluginScheduler{
+				requiredPluginID: "quota-guard",
+				required:         true,
+				ready:            testCase.ready,
+				handled:          testCase.handled,
+			}
+			manager.SetPluginScheduler(scheduler)
+
+			selected, _, errPick := manager.pickNext(context.Background(), "antigravity", "", cliproxyexecutor.Options{}, nil)
+			if selected != nil {
+				t.Fatalf("selected auth = %#v, want nil", selected)
+			}
+			var authErr *Error
+			if !errors.As(errPick, &authErr) || authErr.Code != "required_scheduler_unavailable" || authErr.HTTPStatus != http.StatusServiceUnavailable {
+				t.Fatalf("pick error = %#v, want required_scheduler_unavailable 503", errPick)
+			}
+		})
+	}
+}
+
+func TestManagerRequiredSchedulerRejectsHomeBypass(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.executors["antigravity"] = schedulerTestExecutor{}
+	manager.SetPluginScheduler(&fakePluginScheduler{
+		requiredPluginID: "quota-guard",
+		required:         true,
+		ready:            true,
+	})
+	manager.SetConfig(&internalconfig.Config{Home: internalconfig.HomeConfig{Enabled: true}})
+	manager.SetHomeExecutionRegistry(executionregistry.New())
+
+	selected, _, errPick := manager.pickNext(context.Background(), "antigravity", "", cliproxyexecutor.Options{}, nil)
+	if selected != nil {
+		t.Fatalf("selected auth = %#v, want nil", selected)
+	}
+	var authErr *Error
+	if !errors.As(errPick, &authErr) || authErr.Code != "required_scheduler_unavailable" {
+		t.Fatalf("pick error = %#v, want required scheduler Home rejection", errPick)
+	}
+}
+
+func TestManagerRequiredSchedulerCanExplicitlyPreserveConfiguredSelector(t *testing.T) {
+	manager := NewManager(nil, &FillFirstSelector{}, nil)
+	manager.executors["antigravity"] = schedulerTestExecutor{}
+	for _, candidate := range []*Auth{
+		{ID: "auth-a", Provider: "antigravity", Attributes: map[string]string{"priority": "10"}},
+		{ID: "auth-b", Provider: "antigravity", Attributes: map[string]string{"priority": "20"}},
+	} {
+		if _, errRegister := manager.Register(context.Background(), candidate); errRegister != nil {
+			t.Fatal(errRegister)
+		}
+	}
+	manager.SetPluginScheduler(&fakePluginScheduler{
+		resp:             pluginapi.SchedulerPickResponse{Handled: true, DelegateBuiltin: pluginapi.SchedulerBuiltinConfigured},
+		handled:          true,
+		requiredPluginID: "quota-guard",
+		required:         true,
+		ready:            true,
+	})
+
+	selected, _, errPick := manager.pickNext(context.Background(), "antigravity", "", cliproxyexecutor.Options{}, nil)
+	if errPick != nil {
+		t.Fatalf("pickNext() error = %v", errPick)
+	}
+	if selected == nil || selected.ID != "auth-b" {
+		t.Fatalf("selected auth = %#v, want configured fill-first auth-b", selected)
 	}
 }
 

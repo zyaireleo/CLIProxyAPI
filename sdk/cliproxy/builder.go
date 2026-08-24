@@ -261,6 +261,8 @@ func (b *Builder) Build() (*Service, error) {
 	coreManager.SetConfig(b.cfg)
 	coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
 	if pluginHost != nil {
+		pluginHost.SetAuthManager(coreManager)
+		pluginHost.SetAuthInventoryReady(false)
 		coreManager.SetPluginScheduler(pluginHost)
 	}
 

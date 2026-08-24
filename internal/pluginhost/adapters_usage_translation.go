@@ -7,6 +7,7 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -142,6 +143,7 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 		}
 	}()
 	plugin.HandleUsage(ctx, pluginapi.UsageRecord{
+		RequestID:       logging.GetRequestID(ctx),
 		Provider:        record.Provider,
 		ExecutorType:    record.ExecutorType,
 		Model:           record.Model,

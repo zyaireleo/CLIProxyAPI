@@ -21,7 +21,8 @@ type rpcHostAuthGetRequest struct {
 }
 
 type rpcHostAuthListResponse struct {
-	Files []pluginapi.HostAuthFileEntry `json:"files"`
+	Files          []pluginapi.HostAuthFileEntry `json:"files"`
+	InventoryReady bool                          `json:"inventory_ready"`
 }
 
 type rpcHostAuthGetResponse struct {
@@ -38,6 +39,29 @@ func (h *Host) SetAuthManager(manager *coreauth.Manager) {
 	h.mu.Lock()
 	h.authManager = manager
 	h.mu.Unlock()
+}
+
+// SetAuthInventoryReady publishes whether the initial auth inventory has been
+// loaded into the runtime manager. Plugins must not infer readiness from an
+// empty host.auth.list response because early bootstrap calls happen before
+// the auth store is loaded.
+func (h *Host) SetAuthInventoryReady(ready bool) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.authInventoryReady = ready
+	h.mu.Unlock()
+}
+
+func (h *Host) authInventoryIsReady() bool {
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	ready := h.authInventoryReady
+	h.mu.Unlock()
+	return ready
 }
 
 func (h *Host) currentAuthManager() *coreauth.Manager {
@@ -62,7 +86,10 @@ func (h *Host) callHostAuthList(ctx context.Context, request []byte) ([]byte, er
 	if errList != nil {
 		return nil, errList
 	}
-	return marshalRPCResult(rpcHostAuthListResponse{Files: entries})
+	return marshalRPCResult(rpcHostAuthListResponse{
+		Files:          entries,
+		InventoryReady: h.authInventoryIsReady(),
+	})
 }
 
 func (h *Host) callHostAuthGet(ctx context.Context, request []byte) ([]byte, error) {

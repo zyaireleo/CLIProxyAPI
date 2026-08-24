@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -40,6 +41,51 @@ func (m *Manager) hasPluginScheduler() bool {
 		return state.HasScheduler()
 	}
 	return true
+}
+
+func requiredSchedulerState(scheduler PluginScheduler, provider string, providers []string) (string, bool, bool) {
+	state, ok := scheduler.(requiredPluginSchedulerState)
+	if !ok || state == nil {
+		return "", false, false
+	}
+	return state.RequiredScheduler(provider, providers)
+}
+
+func requiredSchedulerError(pluginID, reason string) error {
+	pluginID = strings.TrimSpace(pluginID)
+	message := "required plugin scheduler is unavailable"
+	if pluginID != "" {
+		message += ": " + pluginID
+	}
+	if reason != "" {
+		message += " (" + reason + ")"
+	}
+	return &Error{Code: "required_scheduler_unavailable", Message: message, HTTPStatus: http.StatusServiceUnavailable}
+}
+
+func (m *Manager) requiredSchedulerHomeError(provider string, providers []string) error {
+	if m == nil || !m.HomeEnabled() {
+		return nil
+	}
+	m.mu.RLock()
+	scheduler := m.pluginScheduler
+	m.mu.RUnlock()
+	pluginID, required, _ := requiredSchedulerState(scheduler, provider, providers)
+	if !required {
+		return nil
+	}
+	return requiredSchedulerError(pluginID, "Home mode bypasses plugin schedulers")
+}
+
+func (m *Manager) routeRequiresPluginScheduler(provider string, providers []string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	scheduler := m.pluginScheduler
+	m.mu.RUnlock()
+	_, required, _ := requiredSchedulerState(scheduler, provider, providers)
+	return required
 }
 
 func isBuiltInSelector(selector Selector) bool {
@@ -577,7 +623,14 @@ func (m *Manager) pickViaBuiltinScheduler(ctx context.Context, strategy schedule
 }
 
 func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginScheduler, provider string, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, candidates []*Auth) (*Auth, bool, error) {
+	pluginID, required, ready := requiredSchedulerState(scheduler, provider, providers)
+	if required && !ready {
+		return nil, true, requiredSchedulerError(pluginID, "missing, fused, or not uniquely active")
+	}
 	if scheduler == nil || len(candidates) == 0 {
+		if required {
+			return nil, true, requiredSchedulerError(pluginID, "scheduler did not receive eligible candidates")
+		}
 		return nil, false, nil
 	}
 	providerKey := strings.ToLower(strings.TrimSpace(provider))
@@ -586,6 +639,7 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 		requestProvider = ""
 	}
 	req := pluginapi.SchedulerPickRequest{
+		RequestID:  logging.GetRequestID(ctx),
 		Provider:   requestProvider,
 		Providers:  schedulerProviders(providerKey, providers),
 		Model:      model,
@@ -598,10 +652,19 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 		return nil, true, errPick
 	}
 	if !handled || !resp.Handled {
+		if required {
+			return nil, true, requiredSchedulerError(pluginID, "scheduler declined or returned an invalid result")
+		}
 		return nil, false, nil
 	}
 	if selected := pickSchedulerAuthByID(candidates, resp.AuthID); selected != nil {
 		return selected, true, nil
+	}
+	if strings.TrimSpace(resp.DelegateBuiltin) == pluginapi.SchedulerBuiltinConfigured {
+		// The required Scheduler made an explicit decision to preserve the host's
+		// configured selector. Returning handled=false here invokes the exact
+		// existing selector path instead of guessing round-robin or fill-first.
+		return nil, false, nil
 	}
 
 	strategy, okStrategy := builtinSchedulerStrategy(resp.DelegateBuiltin)
@@ -1222,6 +1285,9 @@ func (m *Manager) routeAwareSelectionRequired(auth *Auth, routeModel string) boo
 }
 
 func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
+	if errRequired := m.requiredSchedulerHomeError(provider, []string{provider}); errRequired != nil {
+		return nil, nil, errRequired
+	}
 	if m.HomeEnabled() {
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
 		return auth, exec, err
@@ -1480,6 +1546,9 @@ func (m *Manager) SelectHomeAuthByKind(ctx context.Context, provider string, mod
 
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	opts.EnsureMetadata()
+	if errRequired := m.requiredSchedulerHomeError(provider, []string{provider}); errRequired != nil {
+		return nil, nil, errRequired
+	}
 	if m.HomeEnabled() {
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
 		return auth, exec, err
@@ -1487,7 +1556,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = provider
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
 
-	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {
+	if m.routeRequiresPluginScheduler(provider, []string{provider}) || m.hasPluginScheduler() || !m.useSchedulerFastPath() {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
@@ -1539,6 +1608,9 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 }
 
 func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
+	if errRequired := m.requiredSchedulerHomeError("mixed", providers); errRequired != nil {
+		return nil, nil, "", errRequired
+	}
 	if m.HomeEnabled() {
 		return m.pickNextViaHome(ctx, model, opts, tried)
 	}
@@ -1653,13 +1725,16 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 
 func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
 	opts.EnsureMetadata()
+	if errRequired := m.requiredSchedulerHomeError("mixed", providers); errRequired != nil {
+		return nil, nil, "", errRequired
+	}
 	if m.HomeEnabled() {
 		return m.pickNextViaHome(ctx, model, opts, tried)
 	}
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = "mixed"
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
 
-	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {
+	if m.routeRequiresPluginScheduler("mixed", providers) || m.hasPluginScheduler() || !m.useSchedulerFastPath() {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
 

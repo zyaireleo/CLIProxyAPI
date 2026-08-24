@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginstore"
@@ -42,6 +43,10 @@ type PluginInstanceConfig struct {
 	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	// Priority controls plugin startup and routing order.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+	// RequiredSchedulerFor makes this plugin's scheduler mandatory for routes
+	// containing any listed provider. Missing/fused/overridden schedulers fail
+	// closed instead of falling back to the built-in selector.
+	RequiredSchedulerFor []string `yaml:"required-scheduler-for,omitempty" json:"required-scheduler-for,omitempty"`
 	// Raw preserves the full original plugin configuration YAML subtree.
 	Raw yaml.Node `yaml:"-" json:"-"`
 }
@@ -53,6 +58,7 @@ func (c *PluginInstanceConfig) UnmarshalYAML(value *yaml.Node) error {
 	}
 
 	c.Priority = 0
+	c.RequiredSchedulerFor = nil
 	defaultEnabled := false
 	c.Enabled = &defaultEnabled
 
@@ -85,6 +91,23 @@ func (c *PluginInstanceConfig) UnmarshalYAML(value *yaml.Node) error {
 				return fmt.Errorf("parse plugin priority: %w", errDecodePriority)
 			}
 			c.Priority = priority
+		case "required-scheduler-for":
+			var providers []string
+			if errDecodeProviders := node.Decode(&providers); errDecodeProviders != nil {
+				return fmt.Errorf("parse required-scheduler-for: %w", errDecodeProviders)
+			}
+			seen := make(map[string]struct{}, len(providers))
+			for _, provider := range providers {
+				provider = strings.ToLower(strings.TrimSpace(provider))
+				if provider == "" {
+					continue
+				}
+				if _, duplicate := seen[provider]; duplicate {
+					continue
+				}
+				seen[provider] = struct{}{}
+				c.RequiredSchedulerFor = append(c.RequiredSchedulerFor, provider)
+			}
 		}
 	}
 

@@ -121,6 +121,15 @@ func TestRegisterRPCPluginSendsHostSchemaVersion(t *testing.T) {
 	if string(lookup.lastLifecycle.ConfigYAML) != "mode: test" {
 		t.Fatalf("lifecycle config = %q, want input config", lookup.lastLifecycle.ConfigYAML)
 	}
+	wantFeatures := []string{
+		pluginabi.HostFeatureRequiredSchedulerV1,
+		pluginabi.HostFeatureSchedulerRequestIDV1,
+		pluginabi.HostFeatureSchedulerDirectResponseV1,
+		pluginabi.HostFeatureAuthInventoryReadyV1,
+	}
+	if !reflect.DeepEqual(lookup.lastLifecycle.HostFeatures, wantFeatures) {
+		t.Fatalf("lifecycle host_features = %#v, want %#v", lookup.lastLifecycle.HostFeatures, wantFeatures)
+	}
 }
 
 func TestRegisterRPCPluginRejectsFutureSchemaVersion(t *testing.T) {

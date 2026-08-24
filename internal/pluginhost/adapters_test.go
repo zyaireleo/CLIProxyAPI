@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -2254,6 +2255,25 @@ func TestUsageAdapterNormalizesOmittedGenerateToTrue(t *testing.T) {
 	adapter.HandleUsage(context.Background(), coreusage.Record{Provider: "provider", Model: "gpt-5.4"})
 	if !gotGenerate {
 		t.Fatalf("plugin Generate = %v, want true for omitted field", gotGenerate)
+	}
+}
+
+func TestUsageAdapterPropagatesRequestID(t *testing.T) {
+	var gotRequestID string
+	plugin := usagePluginFunc(func(_ context.Context, record pluginapi.UsageRecord) {
+		gotRequestID = record.RequestID
+	})
+	host := newHostWithRecords(capabilityRecord{
+		id: "usage-request-id",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			UsagePlugin: plugin,
+		}},
+	})
+	adapter := &usageAdapter{host: host, pluginID: "usage-request-id"}
+	ctx := logging.WithRequestID(context.Background(), "request-123")
+	adapter.HandleUsage(ctx, coreusage.Record{Provider: "provider", Model: "model"})
+	if gotRequestID != "request-123" {
+		t.Fatalf("usage request ID = %q, want request-123", gotRequestID)
 	}
 }
 

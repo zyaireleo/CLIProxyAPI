@@ -38,9 +38,10 @@ type RuntimeConfig struct {
 
 // PluginInstanceConfig stores host-owned plugin settings and the original plugin YAML subtree.
 type PluginInstanceConfig struct {
-	Enabled  *bool
-	Priority int
-	Raw      yaml.Node
+	Enabled              *bool
+	Priority             int
+	RequiredSchedulerFor []string
+	Raw                  yaml.Node
 }
 
 // AuthModelResult is the public result for per-auth model discovery.
@@ -197,6 +198,15 @@ func (h *Host) HasScheduler() bool {
 	return h != nil && h.inner != nil && h.inner.HasScheduler()
 }
 
+// RequiredScheduler reports the configured mandatory scheduler and whether it
+// is the only active scheduler for the route.
+func (h *Host) RequiredScheduler(provider string, providers []string) (pluginID string, required bool, ready bool) {
+	if h == nil || h.inner == nil {
+		return "", false, false
+	}
+	return h.inner.RequiredScheduler(provider, providers)
+}
+
 // RegisteredPlugins returns active plugin metadata from the current runtime snapshot.
 func (h *Host) RegisteredPlugins() []RegisteredPluginInfo {
 	if h == nil || h.inner == nil {
@@ -232,9 +242,10 @@ func pluginConfigsToInternal(in map[string]PluginInstanceConfig) map[string]inte
 	out := make(map[string]internalconfig.PluginInstanceConfig, len(in))
 	for id, item := range in {
 		out[id] = internalconfig.PluginInstanceConfig{
-			Enabled:  item.Enabled,
-			Priority: item.Priority,
-			Raw:      *deepCopyYAMLNode(&item.Raw),
+			Enabled:              item.Enabled,
+			Priority:             item.Priority,
+			RequiredSchedulerFor: append([]string(nil), item.RequiredSchedulerFor...),
+			Raw:                  *deepCopyYAMLNode(&item.Raw),
 		}
 	}
 	return out

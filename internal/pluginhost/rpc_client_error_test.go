@@ -1,6 +1,7 @@
 package pluginhost
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -20,12 +21,15 @@ func (c staticEnvelopePluginClient) Call(context.Context, string, []byte) ([]byt
 func (c staticEnvelopePluginClient) Shutdown() {}
 
 func TestDecodeEnvelopeResultPreservesPluginHTTPStatus(t *testing.T) {
+	body := []byte(`{"error":{"code":"model_cooldown"}}`)
 	_, errDecode := decodeEnvelopeResult[rpcEmptyResponse](pluginabi.Envelope{
 		OK: false,
 		Error: &pluginabi.Error{
-			Code:       "plugin_error",
-			Message:    "license required",
-			HTTPStatus: http.StatusForbidden,
+			Code:            "plugin_error",
+			Message:         "license required",
+			HTTPStatus:      http.StatusForbidden,
+			ResponseHeaders: http.Header{"Content-Type": {"application/json; charset=utf-8"}, "Retry-After": {"17"}},
+			ResponseBody:    body,
 		},
 	})
 	if errDecode == nil {
@@ -40,6 +44,42 @@ func TestDecodeEnvelopeResultPreservesPluginHTTPStatus(t *testing.T) {
 	}
 	if got := statusProvider.StatusCode(); got != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", got, http.StatusForbidden)
+	}
+	responseProvider, ok := errDecode.(interface {
+		ResponseHeaders() http.Header
+		ResponseBody() []byte
+	})
+	if !ok {
+		t.Fatalf("error %T does not expose direct response", errDecode)
+	}
+	if got := responseProvider.ResponseHeaders().Get("Retry-After"); got != "17" {
+		t.Fatalf("Retry-After = %q, want 17", got)
+	}
+	if got := string(responseProvider.ResponseBody()); got != string(body) {
+		t.Fatalf("response body = %q, want %q", got, body)
+	}
+}
+
+func TestDecodeEnvelopeResultSanitizesPluginDirectResponse(t *testing.T) {
+	oversized := bytes.Repeat([]byte("x"), maxPluginErrorResponseBody+1)
+	_, errDecode := decodeEnvelopeResult[rpcEmptyResponse](pluginabi.Envelope{
+		OK: false,
+		Error: &pluginabi.Error{
+			Message:         "bad plugin response",
+			HTTPStatus:      http.StatusOK,
+			ResponseHeaders: http.Header{"Location": {"https://example.test"}, "Retry-After": {"not-a-number"}, "Content-Type": {"text/html"}},
+			ResponseBody:    oversized,
+		},
+	})
+	pluginErr, ok := errDecode.(rpcPluginError)
+	if !ok {
+		t.Fatalf("error type = %T", errDecode)
+	}
+	if pluginErr.StatusCode() != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", pluginErr.StatusCode())
+	}
+	if len(pluginErr.ResponseHeaders()) != 0 || len(pluginErr.ResponseBody()) != 0 {
+		t.Fatalf("unsafe direct response survived: headers=%v body=%d", pluginErr.ResponseHeaders(), len(pluginErr.ResponseBody()))
 	}
 }
 

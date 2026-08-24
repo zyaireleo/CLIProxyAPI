@@ -75,6 +75,10 @@ type pluginSchedulerState interface {
 	HasScheduler() bool
 }
 
+type requiredPluginSchedulerState interface {
+	RequiredScheduler(provider string, providers []string) (pluginID string, required bool, ready bool)
+}
+
 // StoppableSelector is an optional interface for selectors that hold resources.
 // Selectors that implement this interface will have Stop called during shutdown.
 type StoppableSelector interface {

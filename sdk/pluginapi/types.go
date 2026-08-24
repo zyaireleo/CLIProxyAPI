@@ -457,6 +457,9 @@ type FrontendAuthResponse struct {
 }
 
 const (
+	// SchedulerBuiltinConfigured delegates auth selection to the host's currently
+	// configured selector without changing its strategy or cursor semantics.
+	SchedulerBuiltinConfigured = "configured"
 	// SchedulerBuiltinRoundRobin delegates auth selection to the built-in round-robin scheduler.
 	SchedulerBuiltinRoundRobin = "round-robin"
 	// SchedulerBuiltinFillFirst delegates auth selection to the built-in fill-first scheduler.
@@ -476,6 +479,9 @@ type ModelRouter interface {
 
 // SchedulerPickRequest describes the routing context offered to a scheduler plugin.
 type SchedulerPickRequest struct {
+	// RequestID correlates scheduler selection with usage emitted for the same
+	// inbound request. It is empty when the host cannot provide one.
+	RequestID string
 	// Plugin is the metadata of the plugin being executed.
 	Plugin Metadata
 	// Provider is the primary provider key requested by the route.
@@ -1316,6 +1322,8 @@ type ManagementResponse struct {
 
 // UsageRecord describes request usage and billing metadata.
 type UsageRecord struct {
+	// RequestID correlates this usage attempt with scheduler selection.
+	RequestID string
 	// Provider identifies the upstream provider.
 	Provider string
 	// ExecutorType identifies the executor implementation.

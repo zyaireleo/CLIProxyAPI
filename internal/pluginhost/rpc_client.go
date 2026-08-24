@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -36,9 +37,13 @@ type rpcThinkingApplier struct {
 }
 
 type rpcPluginError struct {
-	message    string
-	statusCode int
+	message         string
+	statusCode      int
+	responseHeaders http.Header
+	responseBody    []byte
 }
+
+const maxPluginErrorResponseBody = 64 << 10
 
 func (e rpcPluginError) Error() string {
 	return e.message
@@ -46,6 +51,14 @@ func (e rpcPluginError) Error() string {
 
 func (e rpcPluginError) StatusCode() int {
 	return e.statusCode
+}
+
+func (e rpcPluginError) ResponseHeaders() http.Header {
+	return e.responseHeaders.Clone()
+}
+
+func (e rpcPluginError) ResponseBody() []byte {
+	return bytes.Clone(e.responseBody)
 }
 
 type rpcResponseNormalizer struct {
@@ -60,6 +73,12 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	resp, errCall := callPlugin[rpcRegistration](ctx, client, method, rpcLifecycleRequest{
 		ConfigYAML:    bytes.Clone(configYAML),
 		SchemaVersion: pluginabi.SchemaVersion,
+		HostFeatures: []string{
+			pluginabi.HostFeatureRequiredSchedulerV1,
+			pluginabi.HostFeatureSchedulerRequestIDV1,
+			pluginabi.HostFeatureSchedulerDirectResponseV1,
+			pluginabi.HostFeatureAuthInventoryReadyV1,
+		},
 	})
 	if errCall != nil {
 		return pluginapi.Plugin{}, errCall
@@ -308,7 +327,17 @@ func decodeEnvelopeResult[T any](envelope pluginabi.Envelope) (T, error) {
 				message = "plugin call failed"
 			}
 			if envelope.Error.HTTPStatus > 0 {
-				return zero, rpcPluginError{message: message, statusCode: envelope.Error.HTTPStatus}
+				statusCode := envelope.Error.HTTPStatus
+				if statusCode < http.StatusBadRequest || statusCode > 599 {
+					statusCode = http.StatusInternalServerError
+				}
+				responseHeaders, responseBody := sanitizePluginErrorResponse(envelope.Error.ResponseHeaders, envelope.Error.ResponseBody)
+				return zero, rpcPluginError{
+					message:         message,
+					statusCode:      statusCode,
+					responseHeaders: responseHeaders,
+					responseBody:    responseBody,
+				}
 			}
 			return zero, fmt.Errorf("%s", message)
 		}
@@ -322,6 +351,25 @@ func decodeEnvelopeResult[T any](envelope pluginabi.Envelope) (T, error) {
 		return zero, errDecode
 	}
 	return out, nil
+}
+
+func sanitizePluginErrorResponse(headers http.Header, body []byte) (http.Header, []byte) {
+	out := make(http.Header)
+	if value := strings.TrimSpace(headers.Get("Retry-After")); value != "" {
+		if seconds, err := strconv.ParseUint(value, 10, 31); err == nil {
+			out.Set("Retry-After", strconv.FormatUint(seconds, 10))
+		}
+	}
+	contentType := strings.TrimSpace(headers.Get("Content-Type"))
+	jsonContent := strings.HasPrefix(strings.ToLower(contentType), "application/json")
+	if len(body) == 0 {
+		return out, nil
+	}
+	if len(body) > maxPluginErrorResponseBody || !jsonContent || !json.Valid(body) {
+		return out, nil
+	}
+	out.Set("Content-Type", "application/json")
+	return out, bytes.Clone(body)
 }
 
 func marshalRPCEnvelope(result json.RawMessage) ([]byte, error) {
