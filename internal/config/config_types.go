@@ -44,8 +44,8 @@ type PluginInstanceConfig struct {
 	// Priority controls plugin startup and routing order.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 	// RequiredSchedulerFor makes this plugin's scheduler mandatory for routes
-	// containing any listed provider. Missing/fused/overridden schedulers fail
-	// closed instead of falling back to the built-in selector.
+	// containing any listed provider. Missing, fused, or inactive schedulers
+	// fail closed instead of falling back to the built-in selector.
 	RequiredSchedulerFor []string `yaml:"required-scheduler-for,omitempty" json:"required-scheduler-for,omitempty"`
 	// Raw preserves the full original plugin configuration YAML subtree.
 	Raw yaml.Node `yaml:"-" json:"-"`

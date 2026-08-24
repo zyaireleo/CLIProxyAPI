@@ -741,6 +741,34 @@ func TestManagerRequiredSchedulerFailsClosedWhenUnavailableOrDeclines(t *testing
 	}
 }
 
+func TestManagerRequiredSchedulerAddedDuringPickStillFailsClosed(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.executors["antigravity"] = schedulerTestExecutor{}
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-a", Provider: "antigravity"}); errRegister != nil {
+		t.Fatal(errRegister)
+	}
+
+	scheduler := &fakePluginScheduler{}
+	scheduler.pick = func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error) {
+		// Simulate required-scheduler-for becoming visible after Manager's first
+		// readiness read but before the plugin host finishes the pick.
+		scheduler.requiredPluginID = "quota-guard"
+		scheduler.required = true
+		scheduler.ready = false
+		return pluginapi.SchedulerPickResponse{}, false, nil
+	}
+	manager.SetPluginScheduler(scheduler)
+
+	selected, _, errPick := manager.pickNext(context.Background(), "antigravity", "", cliproxyexecutor.Options{}, nil)
+	if selected != nil {
+		t.Fatalf("selected auth = %#v, want nil", selected)
+	}
+	var authErr *Error
+	if !errors.As(errPick, &authErr) || authErr.Code != "required_scheduler_unavailable" || authErr.HTTPStatus != http.StatusServiceUnavailable {
+		t.Fatalf("pick error = %#v, want required_scheduler_unavailable 503", errPick)
+	}
+}
+
 func TestManagerRequiredSchedulerRejectsHomeBypass(t *testing.T) {
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	manager.executors["antigravity"] = schedulerTestExecutor{}

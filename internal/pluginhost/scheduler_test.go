@@ -271,10 +271,11 @@ func TestHostRequiredSchedulerReadiness(t *testing.T) {
 			wantPluginID: "quota-guard",
 		},
 		{
-			name:         "second scheduler makes ownership ambiguous",
+			name:         "unrelated scheduler may remain active",
 			records:      []capabilityRecord{scheduler("quota-guard", 10), scheduler("other", 20)},
 			provider:     "antigravity",
 			wantRequired: true,
+			wantReady:    true,
 			wantPluginID: "quota-guard",
 		},
 		{
@@ -325,6 +326,127 @@ func TestHostRequiredSchedulerReadiness(t *testing.T) {
 				t.Fatalf("RequiredScheduler() = (%q, %t, %t), want (%q, %t, %t)", pluginID, required, ready, testCase.wantPluginID, testCase.wantRequired, testCase.wantReady)
 			}
 		})
+	}
+}
+
+func TestHostPickAuthRoutesRequiredProviderToExactScheduler(t *testing.T) {
+	enabled := true
+	var otherCalls int
+	var guardCalls int
+	host := newHostWithRecords(
+		capabilityRecord{
+			id:       "quota-guard",
+			priority: 1,
+			plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{Scheduler: schedulerFunc(func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
+				guardCalls++
+				return pluginapi.SchedulerPickResponse{Handled: true, AuthID: "antigravity-auth"}, nil
+			})}},
+		},
+		capabilityRecord{
+			id:       "codex-token-usage",
+			priority: 100,
+			plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{Scheduler: schedulerFunc(func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
+				otherCalls++
+				return pluginapi.SchedulerPickResponse{Handled: true, AuthID: "codex-auth"}, nil
+			})}},
+		},
+	)
+	host.runtimeConfig = &config.Config{Plugins: config.PluginsConfig{
+		Enabled: true,
+		Configs: map[string]config.PluginInstanceConfig{
+			"quota-guard": {
+				Enabled:              &enabled,
+				RequiredSchedulerFor: []string{"antigravity"},
+			},
+		},
+	}}
+	req := pluginapi.SchedulerPickRequest{
+		Provider: "antigravity",
+		Model:    "gemini-pro-agent",
+		Candidates: []pluginapi.SchedulerAuthCandidate{
+			{ID: "antigravity-auth", Provider: "antigravity"},
+			{ID: "codex-auth", Provider: "codex"},
+		},
+	}
+
+	resp, handled, errPick := host.PickAuth(context.Background(), req)
+	if errPick != nil {
+		t.Fatalf("PickAuth() error = %v, want nil", errPick)
+	}
+	if !handled || resp.AuthID != "antigravity-auth" {
+		t.Fatalf("PickAuth() = (%#v, %t), want antigravity-auth handled", resp, handled)
+	}
+	if guardCalls != 1 || otherCalls != 0 {
+		t.Fatalf("scheduler calls guard=%d other=%d, want 1 and 0", guardCalls, otherCalls)
+	}
+}
+
+func TestHostPickAuthKeepsHighestPrioritySchedulerForUnrelatedProvider(t *testing.T) {
+	enabled := true
+	var tokenUsageCalls int
+	var guardCalls int
+	host := newHostWithRecords(
+		capabilityRecord{
+			id:       "quota-guard",
+			priority: -100,
+			plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{Scheduler: schedulerFunc(func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
+				guardCalls++
+				return pluginapi.SchedulerPickResponse{Handled: false}, nil
+			})}},
+		},
+		capabilityRecord{
+			id:       "codex-token-usage",
+			priority: 0,
+			plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{Scheduler: schedulerFunc(func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
+				tokenUsageCalls++
+				return pluginapi.SchedulerPickResponse{Handled: true, AuthID: "codex-auth"}, nil
+			})}},
+		},
+	)
+	host.runtimeConfig = &config.Config{Plugins: config.PluginsConfig{
+		Enabled: true,
+		Configs: map[string]config.PluginInstanceConfig{
+			"quota-guard": {
+				Enabled:              &enabled,
+				RequiredSchedulerFor: []string{"antigravity"},
+			},
+		},
+	}}
+	req := pluginapi.SchedulerPickRequest{
+		Provider:   "codex",
+		Model:      "gpt-5.6-sol",
+		Candidates: []pluginapi.SchedulerAuthCandidate{{ID: "codex-auth", Provider: "codex"}},
+	}
+
+	resp, handled, errPick := host.PickAuth(context.Background(), req)
+	if errPick != nil {
+		t.Fatalf("PickAuth() error = %v, want nil", errPick)
+	}
+	if !handled || resp.AuthID != "codex-auth" {
+		t.Fatalf("PickAuth() = (%#v, %t), want codex-auth handled", resp, handled)
+	}
+	if tokenUsageCalls != 1 || guardCalls != 0 {
+		t.Fatalf("scheduler calls token-usage=%d guard=%d, want 1 and 0", tokenUsageCalls, guardCalls)
+	}
+}
+
+func TestHostRequiredSchedulerRejectsMixedRouteWithMultipleOwners(t *testing.T) {
+	enabled := true
+	host := newHostWithRecords(
+		capabilityRecord{id: "antigravity-guard", priority: 10, plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{Scheduler: schedulerFunc(nil)}}},
+		capabilityRecord{id: "gemini-guard", priority: 20, plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{Scheduler: schedulerFunc(nil)}}},
+	)
+	host.runtimeConfig = &config.Config{Plugins: config.PluginsConfig{
+		Enabled: true,
+		Configs: map[string]config.PluginInstanceConfig{
+			"antigravity-guard": {Enabled: &enabled, RequiredSchedulerFor: []string{"antigravity"}},
+			"gemini-guard":      {Enabled: &enabled, RequiredSchedulerFor: []string{"gemini"}},
+		},
+	}}
+
+	pluginID, required, ready := host.RequiredScheduler("mixed", []string{"gemini", "antigravity"})
+	if pluginID != "antigravity-guard,gemini-guard" || !required || ready {
+		t.Fatalf("RequiredScheduler() = (%q, %t, %t), want multiple owners required and not ready", pluginID, required, ready)
 	}
 }
 

@@ -625,7 +625,7 @@ func (m *Manager) pickViaBuiltinScheduler(ctx context.Context, strategy schedule
 func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginScheduler, provider string, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, candidates []*Auth) (*Auth, bool, error) {
 	pluginID, required, ready := requiredSchedulerState(scheduler, provider, providers)
 	if required && !ready {
-		return nil, true, requiredSchedulerError(pluginID, "missing, fused, or not uniquely active")
+		return nil, true, requiredSchedulerError(pluginID, "missing, fused, or inactive")
 	}
 	if scheduler == nil || len(candidates) == 0 {
 		if required {
@@ -652,6 +652,10 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 		return nil, true, errPick
 	}
 	if !handled || !resp.Handled {
+		latestPluginID, latestRequired, _ := requiredSchedulerState(scheduler, provider, providers)
+		if latestRequired {
+			return nil, true, requiredSchedulerError(latestPluginID, "scheduler declined or returned an invalid result")
+		}
 		if required {
 			return nil, true, requiredSchedulerError(pluginID, "scheduler declined or returned an invalid result")
 		}

@@ -11,6 +11,9 @@ import (
 
 func (h *Host) PickAuth(ctx context.Context, req pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error) {
 	record := h.schedulerRecord()
+	if requiredID, required, _ := h.RequiredScheduler(req.Provider, req.Providers); required {
+		record = h.schedulerRecordByID(requiredID)
+	}
 	if record == nil {
 		return pluginapi.SchedulerPickResponse{}, false, nil
 	}
@@ -35,8 +38,10 @@ func (h *Host) HasScheduler() bool {
 	return h.schedulerRecord() != nil
 }
 
-// RequiredScheduler reports whether the configured route requires one exact,
-// uniquely active scheduler plugin. The requirement is retained from config
+// RequiredScheduler reports whether the configured route requires one exact
+// scheduler plugin and whether that plugin is active. Other schedulers may
+// remain active for unrelated providers; PickAuth routes required requests
+// directly to the configured plugin. The requirement is retained from config
 // even when the plugin failed to load or became fused, allowing the auth
 // manager to fail closed instead of silently selecting through built-ins.
 func (h *Host) RequiredScheduler(provider string, providers []string) (pluginID string, required bool, ready bool) {
@@ -70,13 +75,12 @@ func (h *Host) RequiredScheduler(provider string, providers []string) (pluginID 
 		return strings.Join(requiredIDs, ","), true, false
 	}
 
-	activeSchedulerIDs := make([]string, 0)
 	for _, record := range h.activeRecords() {
-		if record.plugin.Capabilities.Scheduler != nil && !h.isPluginFused(record.id) {
-			activeSchedulerIDs = append(activeSchedulerIDs, record.id)
+		if record.id == requiredIDs[0] && record.plugin.Capabilities.Scheduler != nil && !h.isPluginFused(record.id) {
+			return requiredIDs[0], true, true
 		}
 	}
-	return requiredIDs[0], true, len(activeSchedulerIDs) == 1 && activeSchedulerIDs[0] == requiredIDs[0]
+	return requiredIDs[0], true, false
 }
 
 func schedulerRouteProviderSet(provider string, providers []string) map[string]struct{} {
@@ -109,6 +113,24 @@ func (h *Host) schedulerRecord() *capabilityRecord {
 	}
 	for _, record := range h.activeRecords() {
 		if h.isPluginFused(record.id) || record.plugin.Capabilities.Scheduler == nil {
+			continue
+		}
+		copyRecord := record
+		return &copyRecord
+	}
+	return nil
+}
+
+func (h *Host) schedulerRecordByID(id string) *capabilityRecord {
+	if h == nil {
+		return nil
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	for _, record := range h.activeRecords() {
+		if record.id != id || h.isPluginFused(record.id) || record.plugin.Capabilities.Scheduler == nil {
 			continue
 		}
 		copyRecord := record

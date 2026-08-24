@@ -199,7 +199,8 @@ func (h *Host) HasScheduler() bool {
 }
 
 // RequiredScheduler reports the configured mandatory scheduler and whether it
-// is the only active scheduler for the route.
+// is active for the route. Other schedulers may remain active for unrelated
+// providers.
 func (h *Host) RequiredScheduler(provider string, providers []string) (pluginID string, required bool, ready bool) {
 	if h == nil || h.inner == nil {
 		return "", false, false
