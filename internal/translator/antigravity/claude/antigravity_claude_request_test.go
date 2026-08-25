@@ -217,6 +217,33 @@ func TestConvertClaudeRequestToAntigravity_MapsTypedWebSearchToIndependentSearch
 	}
 }
 
+func TestConvertClaudeRequestToAntigravity_WebSearchFastPathRunsBeforePrefillFallback(t *testing.T) {
+	registry.GetGlobalRegistry().RegisterClient("test-antigravity-claude-prefill-websearch", "antigravity", []*registry.ModelInfo{
+		{ID: "claude-sonnet-4-6", SupportsWebSearch: true},
+	})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient("test-antigravity-claude-prefill-websearch") })
+
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-6",
+		"messages": [
+			{"role": "user", "content": "original search query"},
+			{"role": "assistant", "content": "partial prefill"}
+		],
+		"tools": [{"type": "web_search_20250305", "name": "web_search"}]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-6", inputJSON, true)
+	if got := gjson.GetBytes(output, "requestType").String(); got != "web_search" {
+		t.Fatalf("requestType = %q, want web_search: %s", got, output)
+	}
+	if got := gjson.GetBytes(output, "request.contents.0.parts.0.text").String(); got != "original search query" {
+		t.Fatalf("search query = %q, want original query; output=%s", got, output)
+	}
+	if strings.Contains(string(output), "Continue.") {
+		t.Fatalf("web-search fast path should not include prefill fallback: %s", output)
+	}
+}
+
 func TestConvertClaudeRequestToAntigravity_UsesDefaultWebSearchMaxResultCountWithoutMaxUses(t *testing.T) {
 	registry.GetGlobalRegistry().RegisterClient("test-antigravity-claude-websearch-default-max", "antigravity", []*registry.ModelInfo{
 		{ID: "gemini-3.1-flash-lite", SupportsWebSearch: true},
@@ -3419,5 +3446,285 @@ func TestConvertClaudeRequestToAntigravityStripsPropertyNames(t *testing.T) {
 	}
 	if !decls.Get("1.parametersJsonSchema.properties.properties").Exists() {
 		t.Errorf("property named properties was lost: %s", decls.Get("1").Raw)
+	}
+}
+
+func TestConvertClaudeRequestToAntigravityUnsupportedClaudePrefillAppendsContinue(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-6",
+		"messages": [
+			{"role": "user", "content": "Write JSON."},
+			{"role": "assistant", "content": "{\"answer\":"}
+		]
+	}`)
+
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "nonstream", true: "stream"}[stream], func(t *testing.T) {
+			output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-6", inputJSON, stream)
+			contents := gjson.GetBytes(output, "request.contents").Array()
+
+			if len(contents) != 3 {
+				t.Fatalf("content count = %d, want 3: %s", len(contents), output)
+			}
+			if got := contents[1].Get("role").String(); got != "model" {
+				t.Fatalf("assistant prefill role = %q, want model: %s", got, contents[1].Raw)
+			}
+			if got := contents[1].Get("parts.0.text").String(); got != `{"answer":` {
+				t.Fatalf("assistant prefill text = %q", got)
+			}
+			if got := contents[2].Get("role").String(); got != "user" {
+				t.Fatalf("fallback role = %q, want user: %s", got, contents[2].Raw)
+			}
+			if got := contents[2].Get("parts.0.text").String(); got != "Continue." {
+				t.Fatalf("fallback text = %q, want Continue.", got)
+			}
+		})
+	}
+}
+
+func TestClaudeAssistantPrefillSupportForModel(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		want  claudeAssistantPrefillSupport
+	}{
+		{name: "claude 3 supported", model: "claude-3-7-sonnet-20250219", want: claudeAssistantPrefillSupported},
+		{name: "claude 4 dated supported", model: "claude-sonnet-4-20250514", want: claudeAssistantPrefillSupported},
+		{name: "claude 4.5 supported", model: "claude-sonnet-4-5-20250929", want: claudeAssistantPrefillSupported},
+		{name: "claude 4.6 unsupported", model: "claude-sonnet-4-6", want: claudeAssistantPrefillUnsupported},
+		{name: "claude 4.6 dated unsupported", model: "claude-sonnet-4-6-20261001", want: claudeAssistantPrefillUnsupported},
+		{name: "future claude unsupported", model: "claude-sonnet-5-0", want: claudeAssistantPrefillUnsupported},
+		{name: "far future claude unsupported", model: "claude-sonnet-11-0", want: claudeAssistantPrefillUnsupported},
+		{name: "unknown claude alias", model: "third-party-claude-like", want: claudeAssistantPrefillUnknown},
+		{name: "third party claude version alias unknown", model: "third-party-claude-sonnet-4-6", want: claudeAssistantPrefillUnknown},
+		{name: "anthropic provider prefix unsupported", model: "anthropic.claude-sonnet-4-6", want: claudeAssistantPrefillUnsupported},
+		{name: "bedrock region provider prefix unsupported", model: "bedrock/us.anthropic.claude-sonnet-4-6-v1:0", want: claudeAssistantPrefillUnsupported},
+		{name: "japan bedrock provider prefix unsupported", model: "jp.anthropic.claude-opus-4-6-v1:0", want: claudeAssistantPrefillUnsupported},
+		{name: "non claude unknown", model: "gemini-3-pro", want: claudeAssistantPrefillUnknown},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := claudeAssistantPrefillSupportForModel(tt.model); got != tt.want {
+				t.Fatalf("support = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConvertClaudeRequestToAntigravityUnsupportedClaudePrefillTextArrayAppendsContinue(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-opus-4-6",
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "Continue the draft"}]},
+			{"role": "assistant", "content": [{"type": "text", "text": "The first point is"}]}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("claude-opus-4-6", inputJSON, false)
+	contents := gjson.GetBytes(output, "request.contents").Array()
+
+	if len(contents) != 3 {
+		t.Fatalf("content count = %d, want 3: %s", len(contents), output)
+	}
+	if got := contents[2].Get("role").String(); got != "user" {
+		t.Fatalf("fallback role = %q, want user: %s", got, contents[2].Raw)
+	}
+	if got := contents[2].Get("parts.0.text").String(); got != "Continue." {
+		t.Fatalf("fallback text = %q, want Continue.", got)
+	}
+}
+
+func TestConvertClaudeRequestToAntigravityKnownProviderPrefillAppendsContinue(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "anthropic/claude-sonnet-4-6",
+		"messages": [
+			{"role": "user", "content": "Question"},
+			{"role": "assistant", "content": "Partial"}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("anthropic/claude-sonnet-4-6", inputJSON, false)
+	contents := gjson.GetBytes(output, "request.contents").Array()
+
+	if len(contents) != 3 {
+		t.Fatalf("content count = %d, want 3: %s", len(contents), output)
+	}
+	if got := contents[2].Get("parts.0.text").String(); got != "Continue." {
+		t.Fatalf("fallback text = %q, want Continue.", got)
+	}
+}
+
+func TestConvertClaudeRequestToAntigravitySupportedClaudePrefillNoOp(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-5",
+		"messages": [
+			{"role": "user", "content": "Question"},
+			{"role": "assistant", "content": "Partial"}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-5", inputJSON, false)
+	contents := gjson.GetBytes(output, "request.contents").Array()
+
+	if len(contents) != 2 {
+		t.Fatalf("content count = %d, want 2: %s", len(contents), output)
+	}
+	if got := contents[1].Get("role").String(); got != "model" {
+		t.Fatalf("tail role = %q, want model: %s", got, contents[1].Raw)
+	}
+}
+
+func TestConvertClaudeRequestToAntigravityUnknownModelPrefillNoOp(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "third-party-claude-like",
+		"messages": [
+			{"role": "user", "content": "Question"},
+			{"role": "assistant", "content": "Partial"}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("third-party-claude-like", inputJSON, false)
+	contents := gjson.GetBytes(output, "request.contents").Array()
+
+	if len(contents) != 2 {
+		t.Fatalf("content count = %d, want 2: %s", len(contents), output)
+	}
+}
+
+func TestConvertClaudeRequestToAntigravityTailUserNoOpForUnsupportedClaude(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-6",
+		"messages": [
+			{"role": "assistant", "content": "Partial"},
+			{"role": "user", "content": "Continue."}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-6", inputJSON, false)
+	contents := gjson.GetBytes(output, "request.contents").Array()
+
+	if len(contents) != 2 {
+		t.Fatalf("content count = %d, want 2: %s", len(contents), output)
+	}
+	if got := contents[1].Get("parts.0.text").String(); got != "Continue." {
+		t.Fatalf("tail user text = %q, want Continue.", got)
+	}
+}
+
+func TestClaudeUnsupportedAssistantPrefillFallbackIsIdempotent(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-6",
+		"messages": [
+			{"role": "user", "content": "Question"},
+			{"role": "assistant", "content": "Partial"}
+		]
+	}`)
+
+	once := applyUnsupportedClaudeAssistantPrefillFallback("claude-sonnet-4-6", inputJSON)
+	twice := applyUnsupportedClaudeAssistantPrefillFallback("claude-sonnet-4-6", once)
+
+	messages := gjson.GetBytes(twice, "messages").Array()
+	if len(messages) != 3 {
+		t.Fatalf("message count after two passes = %d, want 3: %s", len(messages), twice)
+	}
+	if got := messages[2].Get("content").String(); got != "Continue." {
+		t.Fatalf("fallback content = %q, want Continue.", got)
+	}
+}
+
+func TestClaudeUnsupportedAssistantPrefillFallbackDropsBlankTailWithEarlierUser(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-6",
+		"messages": [
+			{"role": "user", "content": "Question"},
+			{"role": "assistant", "content": " \n\t "}
+		]
+	}`)
+
+	output := applyUnsupportedClaudeAssistantPrefillFallback("claude-sonnet-4-6", inputJSON)
+	messages := gjson.GetBytes(output, "messages").Array()
+
+	if len(messages) != 1 {
+		t.Fatalf("message count = %d, want 1: %s", len(messages), output)
+	}
+	if got := messages[0].Get("role").String(); got != "user" {
+		t.Fatalf("remaining role = %q, want user", got)
+	}
+}
+
+func TestClaudeUnsupportedAssistantPrefillFallbackKeepsBlankTailWithoutEarlierUser(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-6",
+		"messages": [
+			{"role": "assistant", "content": "   "}
+		]
+	}`)
+
+	output := applyUnsupportedClaudeAssistantPrefillFallback("claude-sonnet-4-6", inputJSON)
+	messages := gjson.GetBytes(output, "messages").Array()
+
+	if len(messages) != 1 {
+		t.Fatalf("message count = %d, want 1: %s", len(messages), output)
+	}
+	if got := messages[0].Get("role").String(); got != "assistant" {
+		t.Fatalf("remaining role = %q, want assistant", got)
+	}
+}
+
+func TestClaudeUnsupportedAssistantPrefillFallbackKeepsBlankTailWithOnlyBlankUser(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-6",
+		"messages": [
+			{"role": "user", "content": "   "},
+			{"role": "assistant", "content": "   "}
+		]
+	}`)
+
+	output := applyUnsupportedClaudeAssistantPrefillFallback("claude-sonnet-4-6", inputJSON)
+	messages := gjson.GetBytes(output, "messages").Array()
+
+	if len(messages) != 2 {
+		t.Fatalf("message count = %d, want 2: %s", len(messages), output)
+	}
+}
+
+func TestConvertClaudeRequestToAntigravityComplexTailAssistantNoFallback(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-6",
+		"messages": [
+			{"role": "user", "content": "Use tool"},
+			{"role": "assistant", "content": [{"type": "tool_use", "id": "tool-1", "name": "run", "input": {"command": "true"}}]}
+		],
+		"tools": [{"name": "run", "input_schema": {"type": "object"}}]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-6", inputJSON, false)
+	contents := gjson.GetBytes(output, "request.contents").Array()
+
+	if len(contents) != 2 {
+		t.Fatalf("content count = %d, want 2: %s", len(contents), output)
+	}
+	if strings.Contains(string(output), "Continue.") {
+		t.Fatalf("complex assistant tail unexpectedly appended fallback: %s", output)
+	}
+}
+
+func TestClaudeUnsupportedAssistantPrefillFallbackKeepsComplexContent(t *testing.T) {
+	contents := []string{
+		`[{"type":"tool_use","id":"tool-1","name":"run","input":{}}]`,
+		`[{"type":"thinking","thinking":"secret","signature":"sig"}]`,
+		`[{"type":"redacted_thinking","data":"x"}]`,
+		`[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"x"}}]`,
+		`[{"type":"text","text":"prefix"},{"type":"tool_use","id":"tool-1","name":"run","input":{}}]`,
+		`[{"type":"future_block","data":"x"}]`,
+	}
+
+	for _, content := range contents {
+		inputJSON := []byte(`{"messages":[{"role":"user","content":"prompt"},{"role":"assistant","content":` + content + `}]}`)
+		output := applyUnsupportedClaudeAssistantPrefillFallback("claude-sonnet-4-6", inputJSON)
+		if !bytes.Equal(output, inputJSON) {
+			t.Fatalf("complex prefill changed: input=%s output=%s", inputJSON, output)
+		}
 	}
 }

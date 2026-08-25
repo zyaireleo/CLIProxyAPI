@@ -321,6 +321,7 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	if shouldBuildAntigravityWebSearchRequest(modelName, rawJSON) {
 		return buildAntigravityWebSearchRequest(modelName, rawJSON)
 	}
+	rawJSON = applyUnsupportedClaudeAssistantPrefillFallback(modelName, rawJSON)
 	functionNameMap := util.SanitizedFunctionNameMap(rawJSON)
 
 	// system instruction
