@@ -2,6 +2,9 @@ name: translator-path-guard
 
 on:
   pull_request:
+    branches:
+      - main
+      - dev
     types:
       - opened
       - synchronize

@@ -19,7 +19,11 @@ jobs:
           cache: true
       - name: Refresh models catalog
         run: bash .github/scripts/refresh-model-catalogs.sh
-      - name: Build
+      - name: Test
+        run: CGO_ENABLED=1 go test ./...
+      - name: Build plugin-capable Linux binary
         run: |
-          go build -o test-output ./cmd/server
+          CGO_ENABLED=1 go build -o test-output ./cmd/server
+          file test-output | grep -q 'dynamically linked'
+          ldd test-output
           rm -f test-output
