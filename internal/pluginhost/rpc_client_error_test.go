@@ -71,7 +71,7 @@ func TestDecodeEnvelopeResultSanitizesPluginDirectResponse(t *testing.T) {
 			ResponseBody:    oversized,
 		},
 	})
-	pluginErr, ok := errDecode.(rpcPluginError)
+	pluginErr, ok := errDecode.(rpcError)
 	if !ok {
 		t.Fatalf("error type = %T", errDecode)
 	}

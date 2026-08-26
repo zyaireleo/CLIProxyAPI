@@ -36,7 +36,8 @@ type rpcThinkingApplier struct {
 	*rpcPluginAdapter
 }
 
-type rpcPluginError struct {
+type rpcError struct {
+	Code            string
 	message         string
 	statusCode      int
 	responseHeaders http.Header
@@ -45,19 +46,19 @@ type rpcPluginError struct {
 
 const maxPluginErrorResponseBody = 64 << 10
 
-func (e rpcPluginError) Error() string {
+func (e rpcError) Error() string {
 	return e.message
 }
 
-func (e rpcPluginError) StatusCode() int {
+func (e rpcError) StatusCode() int {
 	return e.statusCode
 }
 
-func (e rpcPluginError) ResponseHeaders() http.Header {
+func (e rpcError) ResponseHeaders() http.Header {
 	return e.responseHeaders.Clone()
 }
 
-func (e rpcPluginError) ResponseBody() []byte {
+func (e rpcError) ResponseBody() []byte {
 	return bytes.Clone(e.responseBody)
 }
 
@@ -326,20 +327,18 @@ func decodeEnvelopeResult[T any](envelope pluginabi.Envelope) (T, error) {
 			if message == "" {
 				message = "plugin call failed"
 			}
-			if envelope.Error.HTTPStatus > 0 {
-				statusCode := envelope.Error.HTTPStatus
-				if statusCode < http.StatusBadRequest || statusCode > 599 {
-					statusCode = http.StatusInternalServerError
-				}
-				responseHeaders, responseBody := sanitizePluginErrorResponse(envelope.Error.ResponseHeaders, envelope.Error.ResponseBody)
-				return zero, rpcPluginError{
-					message:         message,
-					statusCode:      statusCode,
-					responseHeaders: responseHeaders,
-					responseBody:    responseBody,
-				}
+			errRPC := rpcError{
+				Code:       strings.TrimSpace(envelope.Error.Code),
+				message:    message,
+				statusCode: envelope.Error.HTTPStatus,
 			}
-			return zero, fmt.Errorf("%s", message)
+			if envelope.Error.HTTPStatus > 0 {
+				if errRPC.statusCode < http.StatusBadRequest || errRPC.statusCode > 599 {
+					errRPC.statusCode = http.StatusInternalServerError
+				}
+				errRPC.responseHeaders, errRPC.responseBody = sanitizePluginErrorResponse(envelope.Error.ResponseHeaders, envelope.Error.ResponseBody)
+			}
+			return zero, errRPC
 		}
 		return zero, fmt.Errorf("plugin call failed")
 	}
