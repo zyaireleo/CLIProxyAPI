@@ -626,9 +626,21 @@ func ApplyClaudeLegacyDeviceHeaders(r *http.Request, ginHeaders http.Header, cfg
 
 	// Unconfirmed clients must not leak a copied or third-party software profile
 	// into the upstream Claude Code SDK fingerprint.
+	osName := profile.OS
+	arch := profile.Arch
+	if cfg == nil || strings.TrimSpace(cfg.ClaudeHeaderDefaults.OS) == "" {
+		osName = mapStainlessOS()
+	}
+	if cfg == nil || strings.TrimSpace(cfg.ClaudeHeaderDefaults.Arch) == "" {
+		arch = mapStainlessArch()
+	}
+	if strings.TrimSpace(ginHeaders.Get("X-Stainless-Os")) != "" || strings.TrimSpace(ginHeaders.Get("X-Stainless-Arch")) != "" {
+		osName = mapStainlessOS()
+		arch = mapStainlessArch()
+	}
 	r.Header.Set("X-Stainless-Runtime-Version", profile.RuntimeVersion)
 	r.Header.Set("X-Stainless-Package-Version", profile.PackageVersion)
-	r.Header.Set("X-Stainless-Os", profile.OS)
-	r.Header.Set("X-Stainless-Arch", profile.Arch)
+	r.Header.Set("X-Stainless-Os", osName)
+	r.Header.Set("X-Stainless-Arch", arch)
 	r.Header.Set("User-Agent", profile.UserAgent)
 }
