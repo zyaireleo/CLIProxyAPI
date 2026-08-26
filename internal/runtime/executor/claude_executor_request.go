@@ -659,18 +659,6 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 	)
 }
 
-func hasCustomHeaderAttr(attrs map[string]string, name string) bool {
-	for key, value := range attrs {
-		if !strings.HasPrefix(key, "header:") || strings.TrimSpace(value) == "" {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(key, "header:")), name) {
-			return true
-		}
-	}
-	return false
-}
-
 func applyClaudeHeadersWithNativeProfile(
 	r *http.Request,
 	auth *cliproxyauth.Auth,
@@ -968,10 +956,6 @@ func applyClaudeHeadersWithNativeProfile(
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs, incomingHeaders)
-	if confirmedClaudeCode && !stabilizeDeviceProfile && hasCustomHeaderAttr(attrs, "User-Agent") {
-		r.Header.Set("X-Stainless-Os", helps.MapStainlessOS())
-		r.Header.Set("X-Stainless-Arch", helps.MapStainlessArch())
-	}
 	// Custom credential headers are a configuration escape hatch for third-party
 	// gateways, so they keep the last word there. On api.anthropic.com they must
 	// not rewrite the reconstructed identity: an overridden Anthropic-Beta yields a
