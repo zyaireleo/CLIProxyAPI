@@ -1602,6 +1602,8 @@ func processPluginSyncCommand(ctx context.Context, options *redis.Options, comma
 	if pluginSyncClient == nil {
 		return ErrNotConnected
 	}
+	stopCancel := context.AfterFunc(ctx, func() { _ = pluginSyncClient.Close() })
+	defer stopCancel()
 	errProcess := pluginSyncClient.Process(ctx, command)
 	errClose := pluginSyncClient.Close()
 	if errContext := ctx.Err(); errContext != nil {
