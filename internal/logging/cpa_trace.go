@@ -1,6 +1,8 @@
 package logging
 
 import (
+	"context"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -10,6 +12,37 @@ import (
 
 // CPATraceIDHeader is the downstream response header used to correlate requests with selected credentials.
 const CPATraceIDHeader = "X-CPA-TRACE-ID"
+const Sub2APITraceIDHeader = "X-Sub2API-Trace-ID"
+
+type sub2APITraceIDKey struct{}
+
+var traceIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+
+func SanitizeSub2APITraceID(value string) string {
+	value = strings.TrimSpace(value)
+	if !traceIDPattern.MatchString(value) {
+		return ""
+	}
+	return value
+}
+
+func WithSub2APITraceID(ctx context.Context, value string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if value = SanitizeSub2APITraceID(value); value != "" {
+		return context.WithValue(ctx, sub2APITraceIDKey{}, value)
+	}
+	return ctx
+}
+
+func GetSub2APITraceID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	value, _ := ctx.Value(sub2APITraceIDKey{}).(string)
+	return SanitizeSub2APITraceID(value)
+}
 
 const ginCPATraceStateKey = "__cpa_trace_state__"
 

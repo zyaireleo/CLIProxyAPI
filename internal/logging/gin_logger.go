@@ -50,6 +50,7 @@ func GinLogrusLogger() gin.HandlerFunc {
 			requestID = GenerateRequestID()
 			SetGinRequestID(c, requestID)
 			ctx := WithRequestID(c.Request.Context(), requestID)
+			ctx = WithSub2APITraceID(ctx, c.GetHeader(Sub2APITraceIDHeader))
 			c.Request = c.Request.WithContext(ctx)
 		}
 
@@ -87,6 +88,9 @@ func GinLogrusLogger() gin.HandlerFunc {
 		}
 
 		entry := log.WithField("request_id", requestID)
+		if traceID := GetSub2APITraceID(c.Request.Context()); traceID != "" {
+			entry = entry.WithField("sub2api_trace_id", traceID)
+		}
 
 		switch {
 		case statusCode >= http.StatusInternalServerError:

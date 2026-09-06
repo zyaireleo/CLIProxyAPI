@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -8,6 +9,16 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestSub2APITraceIDContextSanitizesInput(t *testing.T) {
+	ctx := WithSub2APITraceID(context.Background(), "trace-123")
+	if got := GetSub2APITraceID(ctx); got != "trace-123" {
+		t.Fatalf("trace id = %q", got)
+	}
+	if got := GetSub2APITraceID(WithSub2APITraceID(context.Background(), "secret value")); got != "" {
+		t.Fatalf("invalid trace id = %q", got)
+	}
+}
 
 func TestFormatCPATraceID(t *testing.T) {
 	selectedAt := time.Date(2026, time.July, 17, 21, 58, 49, 0, time.UTC)

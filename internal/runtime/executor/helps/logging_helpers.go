@@ -733,10 +733,15 @@ func LogWithRequestID(ctx context.Context) *log.Entry {
 		return log.NewEntry(log.StandardLogger())
 	}
 	requestID := logging.GetRequestID(ctx)
-	if requestID == "" {
-		return log.NewEntry(log.StandardLogger())
+	traceID := logging.GetSub2APITraceID(ctx)
+	entry := log.NewEntry(log.StandardLogger())
+	if requestID != "" {
+		entry = entry.WithField("request_id", requestID)
 	}
-	return log.WithField("request_id", requestID)
+	if traceID != "" {
+		entry = entry.WithField("sub2api_trace_id", traceID)
+	}
+	return entry
 }
 
 // MarkCreditsUsed flags the request as having used AI credits for billing.
