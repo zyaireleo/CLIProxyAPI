@@ -40,14 +40,13 @@ jobs:
         id: artifact
         run: |
           set -euo pipefail
-          version="$(tr -d '\r\n' < cmd/server/VERSION)"
-          release="${version}-${GITHUB_SHA::12}"
+          release="cpa-${GITHUB_SHA::12}"
           staging="${RUNNER_TEMP}/cpa-release"
           archive="${RUNNER_TEMP}/${release}.tar.gz"
           rm -rf "$staging"
           mkdir -p "$staging"
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -buildvcs=false \
-            -ldflags="-s -w -X main.Version=${version} -X main.Commit=${GITHUB_SHA::12}" \
+            -ldflags="-s -w -X main.Version=${release} -X main.Commit=${GITHUB_SHA::12}" \
             -o "$staging/cli-proxy-api" ./cmd/server
           file "$staging/cli-proxy-api" | grep -q 'dynamically linked'
           ldd "$staging/cli-proxy-api"
