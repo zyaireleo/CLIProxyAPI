@@ -12,4 +12,4 @@ Configure these repository secrets before enabling the workflow:
 
 The target account must be able to run the deployment script with `sudo`. The script uploads an immutable archive under `/opt/cliproxyapi/incoming`, verifies its SHA-256, checks that the binary is dynamically linked and resolvable by `ldd`, then atomically switches `/opt/cliproxyapi/current` and restarts `cliproxyapi.service`. The previous symlink target is retained and restored automatically if restart or health checks fail.
 
-The workflow does not modify `/etc/cliproxyapi/config.yaml`, account data, or database state. It does not depend on the retired `quota-guard` branch or plugin.
+The workflow does not modify `/etc/cliproxyapi/config.yaml`, account data, or database state.

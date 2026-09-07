@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-          description: Deployment action for the fork main branch
+        description: Deployment action for the fork main branch
         required: true
         default: deploy
         type: choice
