@@ -1482,7 +1482,14 @@ func logEntryWithRequestID(ctx context.Context) *log.Entry {
 		return log.NewEntry(log.StandardLogger())
 	}
 	if reqID := logging.GetRequestID(ctx); reqID != "" {
-		return log.WithField("request_id", reqID)
+		entry := log.WithField("request_id", reqID)
+		if traceID := logging.GetSub2APITraceID(ctx); traceID != "" {
+			entry = entry.WithField("sub2api_trace_id", traceID)
+		}
+		return entry
+	}
+	if traceID := logging.GetSub2APITraceID(ctx); traceID != "" {
+		return log.WithField("sub2api_trace_id", traceID)
 	}
 	return log.NewEntry(log.StandardLogger())
 }

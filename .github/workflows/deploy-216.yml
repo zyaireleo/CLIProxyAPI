@@ -1,0 +1,106 @@
+name: Deploy CPA 216
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Deployment action for the fork main branch
+        required: true
+        default: deploy
+        type: choice
+        options:
+          - verify
+          - deploy
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cpa-216-production
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Validate deployment script
+        run: bash deploy/216/test-deploy.sh
+      - name: Test
+        run: CGO_ENABLED=1 go test ./...
+      - name: Build dynamic Linux artifact
+        id: artifact
+        run: |
+          set -euo pipefail
+          release="cpa-${GITHUB_SHA::12}"
+          staging="${RUNNER_TEMP}/cpa-release"
+          archive="${RUNNER_TEMP}/${release}.tar.gz"
+          rm -rf "$staging"
+          mkdir -p "$staging"
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -buildvcs=false \
+            -ldflags="-s -w -X main.Version=${release} -X main.Commit=${GITHUB_SHA::12}" \
+            -o "$staging/cli-proxy-api" ./cmd/server
+          file "$staging/cli-proxy-api" | grep -q 'dynamically linked'
+          ldd "$staging/cli-proxy-api"
+          tar -C "$staging" -czf "$archive" cli-proxy-api
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$archive" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpa-release-${{ steps.artifact.outputs.release }}
+          path: ${{ steps.artifact.outputs.archive }}
+          retention-days: 7
+
+  deploy:
+    needs: build
+    if: github.event_name == 'push' || inputs.mode == 'deploy'
+    runs-on: ubuntu-latest
+    environment: production-216
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cpa-release-*
+          path: release
+          merge-multiple: true
+      - name: Configure SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.CPA_216_HOST }}
+          DEPLOY_PORT: ${{ secrets.CPA_216_PORT }}
+          DEPLOY_USER: ${{ secrets.CPA_216_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.CPA_216_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.CPA_216_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST"; test -n "$DEPLOY_PORT"; test -n "$DEPLOY_USER"
+          test -n "$SSH_PRIVATE_KEY"; test -n "$SSH_KNOWN_HOSTS"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/cpa_216
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/cpa_216
+      - name: Transfer and deploy
+        env:
+          DEPLOY_HOST: ${{ secrets.CPA_216_HOST }}
+          DEPLOY_PORT: ${{ secrets.CPA_216_PORT }}
+          DEPLOY_USER: ${{ secrets.CPA_216_USER }}
+        run: |
+          set -euo pipefail
+          archive="$(find release -type f -name '*.tar.gz' -print -quit)"
+          test -n "$archive"
+          release="$(basename "$archive" .tar.gz)"
+          sha256="$(sha256sum "$archive" | awk '{print $1}')"
+          scp -i ~/.ssh/cpa_216 -P "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$archive" "$DEPLOY_USER@$DEPLOY_HOST:/tmp/$release.tar.gz"
+          ssh -i ~/.ssh/cpa_216 -p "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo bash -s -- '$release' '/tmp/$release.tar.gz' '$sha256'" < deploy/216/deploy.sh
