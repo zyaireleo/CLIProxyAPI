@@ -10,6 +10,6 @@ Configure these repository secrets before enabling the workflow:
 - `CPA_216_SSH_KEY`
 - `CPA_216_KNOWN_HOSTS`
 
-The target account must be able to run the deployment script with `sudo`. The script uploads an immutable archive under `/opt/cliproxyapi/incoming`, verifies its SHA-256, checks that the binary is dynamically linked and resolvable by `ldd`, then atomically switches `/opt/cliproxyapi/current` and restarts `cliproxyapi.service`. The previous symlink target is retained and restored automatically if restart or health checks fail.
+The target account must be able to run the deployment script with `sudo`. The script uploads an immutable archive under `/opt/cliproxyapi/incoming`, verifies its SHA-256, checks that the binary is dynamically linked and resolvable by `ldd`, then atomically switches `/opt/cliproxyapi/current` and restarts `cliproxyapi.service`. The deployment waits for an active service with zero automatic restarts and a successful HTTP `/healthz` probe. The previous symlink target is restored automatically if restart or these checks fail, then verified with retries against `/` for older-version compatibility. Replacing the currently active release directory is rejected to preserve the rollback source.
 
 The workflow does not modify `/etc/cliproxyapi/config.yaml`, account data, or database state.
