@@ -20,9 +20,12 @@ jobs:
         with:
           files: |
             internal/translator/**
-      - name: Fail when restricted paths change
+      - name: Verify restricted paths match the approved upstream release
         if: steps.changed-files.outputs.any_changed == 'true'
         run: |
-          echo "Changes under internal/translator are not allowed in pull requests."
-          echo "You need to create an issue for our maintenance team to make the necessary changes."
-          exit 1
+          set -euo pipefail
+          # v7.3.8: allow pristine upstream updates, never fork-specific translator edits.
+          upstream_commit=c93978c4ea2e908255a2a06c37599fda3651554a
+          git fetch --no-tags https://github.com/router-for-me/CLIProxyAPI.git "$upstream_commit"
+          git merge-base --is-ancestor "$upstream_commit" HEAD
+          git diff --exit-code "$upstream_commit" HEAD -- internal/translator/

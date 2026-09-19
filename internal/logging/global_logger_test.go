@@ -26,6 +26,18 @@ func TestLogFormatterPrintsVersionField(t *testing.T) {
 	}
 }
 
+func TestLogFormatterPrintsSub2APITraceID(t *testing.T) {
+	entry := log.NewEntry(log.New()).WithField("sub2api_trace_id", "sub2api:request-123")
+	entry.Message = "request completed"
+	formatted, err := (&LogFormatter{}).Format(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(formatted), "sub2api_trace_id=sub2api:request-123") {
+		t.Fatalf("formatted log missing correlation field: %s", formatted)
+	}
+}
+
 func TestLogFormatterPrintsMediaForwardingFields(t *testing.T) {
 	entry := log.NewEntry(log.New())
 	entry.Time = time.Date(2026, 7, 25, 7, 36, 4, 0, time.Local)
