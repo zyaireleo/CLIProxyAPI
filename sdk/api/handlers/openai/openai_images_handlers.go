@@ -237,7 +237,7 @@ func isSupportedImagesModel(model string) bool {
 	if isCodexImagesToolModel(model) {
 		return true
 	}
-	return isXAIImagesModel(model) || isOpenAICompatImagesModel(model)
+	return isGeminiNativeImagesModel(model) || isXAIImagesModel(model) || isOpenAICompatImagesModel(model)
 }
 
 func isCodexImagesToolModel(model string) bool {
@@ -661,6 +661,19 @@ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 		responseFormat = "b64_json"
 	}
 	stream := gjson.GetBytes(rawJSON, "stream").Bool()
+	if isGeminiNativeImagesModel(imageModel) {
+		if err := validateGeminiImageOptions(responseFormat, gjson.GetBytes(rawJSON, "n").Int(), gjson.GetBytes(rawJSON, "quality").String(), gjson.GetBytes(rawJSON, "background").String()); err != nil {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
+			return
+		}
+		size := gjson.GetBytes(rawJSON, "size").String()
+		if err := validateGeminiImageSize(size); err != nil {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
+			return
+		}
+		h.handleGeminiNativeImages(c, imageModel, prompt, size, responseFormat, nil, stream)
+		return
+	}
 
 	if isCodexImagesToolModel(imageModel) {
 		imageReq := buildOpenAICompatImagesJSONRequest(rawJSON, imageModel, stream)
@@ -806,6 +819,19 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 		responseFormat = "b64_json"
 	}
 	stream := parseBoolField(c.PostForm("stream"), false)
+	if isGeminiNativeImagesModel(imageModel) {
+		if err := validateGeminiImageOptions(responseFormat, parseIntField(c.PostForm("n"), 0), c.PostForm("quality"), c.PostForm("background")); err != nil {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
+			return
+		}
+		size := c.PostForm("size")
+		if err := validateGeminiImageSize(size); err != nil {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
+			return
+		}
+		h.handleGeminiNativeImages(c, imageModel, prompt, size, responseFormat, images, stream)
+		return
+	}
 
 	if isCodexImagesToolModel(imageModel) {
 		imageReq, contentType, errBuild := buildOpenAICompatImagesMultipartRequest(form, imageModel, stream)
@@ -982,6 +1008,9 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 		for _, img := range imagesResult.Array() {
 			url := strings.TrimSpace(img.Get("image_url").String())
 			if url == "" {
+				url = strings.TrimSpace(img.Get("image_url.url").String())
+			}
+			if url == "" {
 				continue
 			}
 			images = append(images, url)
@@ -994,6 +1023,19 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 				Type:    "invalid_request_error",
 			},
 		})
+		return
+	}
+	if isGeminiNativeImagesModel(imageModel) {
+		if err := validateGeminiImageOptions(responseFormat, gjson.GetBytes(rawJSON, "n").Int(), gjson.GetBytes(rawJSON, "quality").String(), gjson.GetBytes(rawJSON, "background").String()); err != nil {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
+			return
+		}
+		size := gjson.GetBytes(rawJSON, "size").String()
+		if err := validateGeminiImageSize(size); err != nil {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
+			return
+		}
+		h.handleGeminiNativeImages(c, imageModel, prompt, size, responseFormat, images, stream)
 		return
 	}
 
