@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"time"
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
@@ -270,3 +271,28 @@ type RequestScopedError interface {
 	error
 	IsRequestScoped() bool
 }
+
+// NoImageContentError signals that an image-generation model completed a
+// response without producing any image content, which upstreams often report
+// as HTTP 200 with a text-only body when the credential's image quota is
+// exhausted. Executors return it alongside the completed response so auth
+// conductors can rotate to another credential and, when every credential
+// fails the same way, still fall back to the original response.
+type NoImageContentError struct {
+	// Model is the base model name that produced the text-only response.
+	Model string
+	// Cooldown suggests how long the credential should cool down before
+	// being selected again for image work.
+	Cooldown *time.Duration
+}
+
+func (e *NoImageContentError) Error() string {
+	if e == nil {
+		return "image model returned no image content"
+	}
+	return "image model " + e.Model + " returned no image content"
+}
+
+// RetryAfter exposes the cooldown hint through the same shape used by status
+// errors so conductor cooldown handling picks it up via errors.As.
+func (e *NoImageContentError) RetryAfter() *time.Duration { return e.Cooldown }
