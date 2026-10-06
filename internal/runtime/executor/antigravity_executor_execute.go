@@ -198,6 +198,10 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	}
 	resp = cliproxyexecutor.Response{Payload: converted, Headers: httpResp.Header.Clone()}
 	reporter.EnsurePublished(ctx)
+	if antigravityImageModelName(baseModel) && !antigravityImageOutputDisabled(originalPayload) && !antigravityResponseContainsImage(converted) {
+		log.Infof("antigravity executor: image model %s returned no image content (auth %s), signalling credential rotation", baseModel, auth.ID)
+		return resp, antigravityNoImageContentSignal(baseModel)
+	}
 	return resp, nil
 }
 
@@ -469,6 +473,10 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	resp = cliproxyexecutor.Response{Payload: converted, Headers: httpResp.Header.Clone()}
 	reporter.EnsurePublished(ctx)
 
+	if antigravityImageModelName(baseModel) && !antigravityImageOutputDisabled(originalPayload) && !antigravityResponseContainsImage(converted) {
+		log.Infof("antigravity executor: image model %s returned no image content (auth %s), signalling credential rotation", baseModel, auth.ID)
+		return resp, antigravityNoImageContentSignal(baseModel)
+	}
 	return resp, nil
 }
 

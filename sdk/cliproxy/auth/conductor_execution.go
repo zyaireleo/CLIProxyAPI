@@ -477,8 +477,16 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	attempted := make(map[string]struct{})
 	var lastErr error
 	var upstreamErr error
+	// lastNoImageResp remembers a completed image-model response that carried no
+	// image content; if every rotated credential fails the same way the original
+	// response is returned so clients keep seeing upstream output instead of an
+	// error synthesized by credential rotation.
+	var lastNoImageResp *cliproxyexecutor.Response
 	for {
 		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
+			if lastNoImageResp != nil {
+				return *lastNoImageResp, nil
+			}
 			if lastErr != nil {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
 			}
@@ -492,6 +500,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
 		if errPick != nil {
+			if lastNoImageResp != nil {
+				return *lastNoImageResp, nil
+			}
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
 			}
@@ -607,6 +618,13 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
+			}
+			if errExec != nil {
+				var noImageErr *cliproxyexecutor.NoImageContentError
+				if errors.As(errExec, &noImageErr) && len(resp.Payload) > 0 {
+					fallbackResp := resp
+					lastNoImageResp = &fallbackResp
+				}
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: execOpts}
 			if errExec != nil {
