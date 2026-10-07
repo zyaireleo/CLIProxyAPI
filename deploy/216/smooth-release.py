@@ -92,6 +92,9 @@ def prepare_cpa_consumers(state_dir):
     if set(ids) - {5382, 5385, 5386}:
         raise RuntimeError("Unexpected CPA1 local consumer; refusing an unreviewed account update")
     accounts = [call("GET", "/accounts/" + str(account_id)) for account_id in ids]
+    expected_platforms = {5382: "gemini", 5385: "anthropic", 5386: "openai"}
+    if any(account.get("platform") != expected_platforms[account["id"]] or account.get("type") != "apikey" for account in accounts):
+        raise RuntimeError("CPA1 consumer identity differs from the reviewed production binding")
     atomic_write(state_dir / "cpa1-consumers-before.json", json.dumps(accounts).encode(), 0o600)
     changed = migrate_consumers(call, accounts)
     print(json.dumps({"cpa1_stable_ingress_accounts": changed}), flush=True)
@@ -153,6 +156,7 @@ class SmoothRelease:
 server {
     listen 127.0.0.1:8316;
     server_name _;
+    client_max_body_size 100m;
     location / {
         proxy_pass http://127.0.0.1:8317;
         proxy_http_version 1.1;

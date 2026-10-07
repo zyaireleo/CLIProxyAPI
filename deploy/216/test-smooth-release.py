@@ -3,7 +3,10 @@ import importlib.util
 import json
 import pathlib
 import tempfile
+import threading
+import urllib.request
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("smooth", pathlib.Path(__file__).with_name("smooth-release.py"))
@@ -12,6 +15,85 @@ spec.loader.exec_module(smooth)
 
 
 class SmoothReleaseContracts(unittest.TestCase):
+    def test_real_inflight_request_survives_cutover_without_replaying(self):
+        entered, release_old, switched = threading.Event(), threading.Event(), threading.Event()
+        active = {"old": 0}
+        calls = {"old": 0, "new": 0}
+        backend = {"url": ""}
+        class Old(BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+            def do_GET(self):
+                calls["old"] += 1
+                active["old"] += 1
+                entered.set()
+                release_old.wait(5)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"OLD_COMPLETE")
+                active["old"] -= 1
+        class New(BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+            def do_GET(self):
+                calls["new"] += 1
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"NEW_COMPLETE")
+        class Proxy(BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+            def do_GET(self):
+                with urllib.request.urlopen(backend["url"]) as response:
+                    body = response.read()
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(body)
+        servers = [ThreadingHTTPServer(("127.0.0.1", 0), handler) for handler in [Old, New, Proxy]]
+        threads = [threading.Thread(target=server.serve_forever, daemon=True) for server in servers]
+        for thread in threads:
+            thread.start()
+        old_url, new_url, proxy_url = ["http://127.0.0.1:" + str(server.server_port) for server in servers]
+        backend["url"] = old_url
+        received = []
+        def read_old():
+            with urllib.request.urlopen(proxy_url) as response:
+                received.append(response.read())
+        client = threading.Thread(target=read_old)
+        client.start()
+        try:
+            self.assertTrue(entered.wait(3))
+            with tempfile.TemporaryDirectory() as temporary:
+                deployment = smooth.SmoothRelease("sub2api", temporary, pathlib.Path(temporary) / "state")
+                deployment.probe = lambda _: None
+                deployment.snapshot_routes = lambda: None
+                deployment.start_bridge = lambda: None
+                deployment.wait_ready = lambda: None
+                def route(bridge):
+                    backend["url"] = new_url if bridge else old_url
+                    switched.set()
+                deployment.route = route
+                deployment.connections = lambda _: active["old"]
+                publisher = threading.Thread(target=deployment.begin)
+                publisher.start()
+                self.assertTrue(switched.wait(3))
+                self.assertTrue(publisher.is_alive(), "Deployment stopped waiting while the old request was active")
+                with urllib.request.urlopen(proxy_url) as response:
+                    self.assertEqual(response.read(), b"NEW_COMPLETE")
+                release_old.set()
+                publisher.join(4)
+                self.assertFalse(publisher.is_alive())
+                client.join(3)
+                self.assertEqual(received, [b"OLD_COMPLETE"])
+                self.assertEqual(calls, {"old": 1, "new": 1})
+        finally:
+            release_old.set()
+            client.join(3)
+            for server, thread in zip(servers, threads):
+                server.shutdown()
+                server.server_close()
+                thread.join(3)
+
     def test_cpa_config_preserves_authentication_and_only_changes_port(self):
         raw = 'host: "127.0.0.1"\nport: 8317\nauth-dir: "/fixture/auths"\napi-keys:\n  - fixture-private\n'
         self.assertEqual(smooth.cpa_bridge_config(raw, 28317), raw.replace("port: 8317", "port: 28317"))
