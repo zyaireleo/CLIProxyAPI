@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/geminiresponse"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -119,6 +120,7 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	ctx = m.geminiAttemptContext(ctx, providers, req.Model)
 	req, opts = cliproxysession.Enrich(req, opts)
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
@@ -148,6 +150,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 			preferredUpstreamErr = errExec
 		}
 		lastErr = errExec
+		geminiresponse.SaveFailure(ctx, errExec)
 		wait, shouldRetry := m.shouldRetryAfterErrorWithAttempted(ctx, opts, errExec, attempt, normalized, retryModel, maxWait, -1, defaultRequestRetry, roundAttempted)
 		if !shouldRetry {
 			break
@@ -164,7 +167,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		}
 		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 		lastErr = unwrapExecutionBoundaryError(lastErr)
-		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
+		if !geminiresponse.Exhausted(ctx) && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
 			if resp, ok, errCredits := m.tryAntigravityCreditsExecute(ctx, req, opts); errCredits != nil {
 				return cliproxyexecutor.Response{}, errCredits
 			} else if ok {
@@ -230,6 +233,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	ctx = m.geminiAttemptContext(ctx, providers, req.Model)
 	req, opts = cliproxysession.Enrich(req, opts)
 	if m.HomeEnabled() {
 		if unlockSession := m.lockHomeWebsocketSession(ctx, opts); unlockSession != nil {
@@ -278,6 +282,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			return nil, unwrapExecutionBoundaryError(errStream)
 		}
 		lastErr = errStream
+		geminiresponse.SaveFailure(ctx, errStream)
 		wait, shouldRetry := m.shouldRetryAfterErrorWithAttempted(ctx, opts, errStream, attempt, normalized, retryModel, maxWait, homeRetryLimit, defaultRequestRetry, roundAttempted)
 		if !shouldRetry {
 			break
@@ -299,7 +304,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 		}
 		lastErr = unwrapExecutionBoundaryError(lastErr)
-		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
+		if !geminiresponse.Exhausted(ctx) && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
 			if result, ok, errCredits := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); errCredits != nil {
 				return nil, errCredits
 			} else if ok {
@@ -483,6 +488,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	// error synthesized by credential rotation.
 	var lastNoImageResp *cliproxyexecutor.Response
 	for {
+		if geminiresponse.Exhausted(ctx) {
+			if lastErr != nil {
+				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
+			}
+			return cliproxyexecutor.Response{}, geminiresponse.LastFailure(ctx)
+		}
 		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
 			if lastNoImageResp != nil {
 				return *lastNoImageResp, nil
@@ -620,6 +631,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				return cliproxyexecutor.Response{}, errCancel
 			}
 			if errExec != nil {
+				geminiresponse.SaveFailure(ctx, errExec)
 				var noImageErr *cliproxyexecutor.NoImageContentError
 				if errors.As(errExec, &noImageErr) && len(resp.Payload) > 0 {
 					fallbackResp := resp
@@ -932,6 +944,12 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	var upstreamErr error
 	var roundTiming homeRetryRoundTiming
 	for {
+		if geminiresponse.Exhausted(ctx) {
+			if lastErr != nil {
+				return nil, preferredExecutionAttemptError(lastErr, upstreamErr)
+			}
+			return nil, geminiresponse.LastFailure(ctx)
+		}
 		allowSameAuthRetry := homeMode && homeSameAuthRetryPending && lastHomeAuthID != "" && homeSameAuthRetries[lastHomeAuthID] == 0
 		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials && !allowSameAuthRetry {
 			if lastErr != nil {

@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/geminiresponse"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -44,6 +46,10 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		return e.executeCompactionStream(ctx, auth, req, opts)
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	if strings.HasPrefix(baseModel, "gemini") && e.cfg != nil {
+		ctx = geminiresponse.WithBudget(ctx, e.cfg.AntigravityGeminiMaxAttempts)
+	}
+	defer func() { geminiresponse.SaveFailure(ctx, err) }()
 
 	ctx = context.WithValue(ctx, "alt", "")
 	if !antigravityCoolingDisabled(auth, e.cfg) {
@@ -129,7 +135,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		err = errReq
 		return nil, err
 	}
-	httpResp, errDo := httpClient.Do(httpReq)
+	httpResp, errDo := helps.DoGeminiGeneration(ctx, httpClient, httpReq, baseModel)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
@@ -184,7 +190,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			// Report the upstream failure rather than the cleanup failure.
 			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
 		}
-		err = newAntigravityStatusErr(httpResp.StatusCode, bodyBytes)
+		err = newAntigravityStatusErr(httpResp.StatusCode, bodyBytes, httpResp.Header)
 		return nil, err
 	}
 
@@ -205,6 +211,32 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		scanner.Buffer(nil, streamScannerBuffer)
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var param any
+		var gate *helps.GeminiResponseGate
+		if strings.HasPrefix(baseModel, "gemini") {
+			requireImage := e.cfg != nil && e.cfg.AntigravityGeminiMaxAttempts > 0 && antigravityImageModelName(baseModel) && !antigravityImageOutputDisabled(originalPayload)
+			gate = helps.NewGeminiResponseGate(responseFormat == sdktranslator.FormatGemini, requireImage)
+		}
+		emitFailure := func(failure error) {
+			geminiresponse.SaveFailure(ctx, failure)
+			helps.LogGeminiOutcome(ctx, baseModel, failure)
+			reporter.PublishFailure(ctx, failure)
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: failure}:
+			case <-ctx.Done():
+			}
+		}
+		emitPayload := func(payload []byte) bool {
+			payload = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, payload)
+			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(payload), &param, claudeInputTokens)
+			for _, chunk := range chunks {
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
+				case <-ctx.Done():
+					return false
+				}
+			}
+			return true
+		}
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
@@ -226,12 +258,17 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 				reporter.Publish(ctx, detail)
 			}
 
-			payload = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, payload)
-			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(payload), &param, claudeInputTokens)
-			for i := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
+			payloads := [][]byte{payload}
+			if gate != nil {
+				var failure error
+				payloads, failure = gate.Observe(payload)
+				if failure != nil {
+					emitFailure(failure)
+					return
+				}
+			}
+			for _, value := range payloads {
+				if !emitPayload(value) {
 					return
 				}
 			}
@@ -244,6 +281,19 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			case <-ctx.Done():
 			}
 		} else {
+			if gate != nil {
+				pending, failure := gate.Finish()
+				if failure != nil {
+					emitFailure(failure)
+					return
+				}
+				for _, value := range pending {
+					if !emitPayload(value) {
+						return
+					}
+				}
+				helps.LogGeminiOutcome(ctx, baseModel, nil)
+			}
 			// Only a clean end of stream may produce a synthetic terminal event.
 			// Translating [DONE] after a read error would report a truncated
 			// stream as a successful completion.

@@ -177,9 +177,14 @@ func TestAntigravityStreamDoesNotFinalizeEmptyUpstreamStream(t *testing.T) {
 			if errExecute != nil {
 				t.Fatalf("ExecuteStream() error = %v", errExecute)
 			}
+			var sawEmptyError bool
 			for chunk := range result.Chunks {
 				if chunk.Err != nil {
-					t.Fatalf("unexpected stream error: %v", chunk.Err)
+					if gjson.Get(chunk.Err.Error(), "error.code").String() != "upstream_empty_response" {
+						t.Fatalf("unexpected stream error: %v", chunk.Err)
+					}
+					sawEmptyError = true
+					continue
 				}
 				if finish := gjson.GetBytes(chunk.Payload, "candidates.0.finishReason").String(); finish != "" {
 					t.Fatalf("empty upstream stream must not synthesize a terminal chunk: %s", chunk.Payload)
@@ -187,6 +192,9 @@ func TestAntigravityStreamDoesNotFinalizeEmptyUpstreamStream(t *testing.T) {
 				if finish := gjson.GetBytes(chunk.Payload, "choices.0.finish_reason").String(); finish != "" {
 					t.Fatalf("empty upstream stream must not synthesize a terminal chunk: %s", chunk.Payload)
 				}
+			}
+			if !sawEmptyError {
+				t.Fatal("empty upstream stream must return an explicit upstream_empty_response error")
 			}
 		})
 	}

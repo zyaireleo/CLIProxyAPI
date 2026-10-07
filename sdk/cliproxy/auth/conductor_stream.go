@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/geminiresponse"
 	"net/http"
 	"strings"
 	"time"
@@ -248,6 +249,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		}
 		durationStream := time.Since(startStream)
 		if errStream != nil {
+			geminiresponse.SaveFailure(ctx, errStream)
 			if errCtx := ctx.Err(); errCtx != nil {
 				return nil, errCtx
 			}
@@ -319,6 +321,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 
 		buffered, closed, bootstrapErr := readStreamBootstrap(ctx, streamResult.Chunks)
 		bootstrapErr = markUpstreamExecutionAttemptFromContext(ctx, bootstrapErr)
+		geminiresponse.SaveFailure(ctx, bootstrapErr)
 		if hasUpstreamExecutionAttempt(bootstrapErr) {
 			upstreamErr = newStreamBootstrapError(bootstrapErr, streamResult.Headers)
 		}

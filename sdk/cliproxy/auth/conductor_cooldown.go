@@ -876,7 +876,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 									}
 									next = now.Add(cooldown).Round(0)
 								} else {
-									next, backoffLevel = quotaCooldownAfterFailure(state.Quota, now)
+									if strings.EqualFold(auth.Provider, "antigravity") && strings.HasPrefix(strings.ToLower(result.Model), "gemini") {
+										next, backoffLevel = geminiQuotaCooldownAfterFailure(state.Quota, now)
+									} else {
+										next, backoffLevel = quotaCooldownAfterFailure(state.Quota, now)
+									}
 								}
 								if state.Quota.Exceeded && state.Quota.NextRecoverAt.After(next) {
 									next = state.Quota.NextRecoverAt
@@ -2268,6 +2272,24 @@ func quotaCooldownAfterFailure(quota QuotaState, now time.Time) (time.Time, int)
 		next = now.Add(cooldown).Round(0)
 	}
 	return next, nextLevel
+}
+
+// Gemini's unknown quota failures use a bounded recovery window per native model.
+// Concurrent failures reuse an active window, and explicit longer deadlines survive.
+func geminiQuotaCooldownAfterFailure(quota QuotaState, now time.Time) (time.Time, int) {
+	if quota.NextRecoverAt.After(now) {
+		return quota.NextRecoverAt, quota.BackoffLevel
+	}
+	level := quota.BackoffLevel
+	if level < 0 {
+		level = 0
+	}
+	cooldown := 300 * time.Second
+	if level < 4 {
+		cooldown = 30 * time.Second * time.Duration(1<<level)
+		level++
+	}
+	return now.Add(cooldown).Round(0), level
 }
 
 // nextQuotaCooldown returns the next cooldown duration and updated backoff level for repeated quota errors.
