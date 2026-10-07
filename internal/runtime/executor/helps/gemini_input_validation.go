@@ -26,16 +26,19 @@ func NormalizeGeminiGenerationInput(payload []byte, path string) ([]byte, error)
 	usable := false
 	for ci, content := range contents.Array() {
 		parts := content.Get("parts")
-		if !parts.IsArray() {
+		if !parts.IsArray() || len(parts.Array()) == 0 {
 			return nil, geminiInputError("Gemini content parts must be an array")
 		}
+		turnUsable := false
 		for pi, part := range parts.Array() {
 			prefix := path + "." + strconv.Itoa(ci) + ".parts." + strconv.Itoa(pi)
-			if strings.TrimSpace(part.Get("text").String()) != "" || part.Get("functionResponse").Exists() || part.Get("fileData").Exists() {
+			if strings.TrimSpace(part.Get("text").String()) != "" || part.Get("functionResponse").Exists() || part.Get("fileData").Exists() || part.Get("toolCall").Exists() || part.Get("toolResponse").Exists() || part.Get("executableCode").Exists() || part.Get("codeExecutionResult").Exists() {
 				usable = true
+				turnUsable = true
 			}
 			if call := part.Get("functionCall"); call.Exists() {
 				usable = true
+				turnUsable = true
 				if strings.TrimSpace(call.Get("name").String()) == "" {
 					return nil, geminiInputError("functionCall.name is required")
 				}
@@ -55,6 +58,7 @@ func NormalizeGeminiGenerationInput(payload []byte, path string) ([]byte, error)
 			}
 			if inline := part.Get("inlineData"); inline.Exists() {
 				usable = true
+				turnUsable = true
 				encoded := inline.Get("data").String()
 				if base64.StdEncoding.DecodedLen(len(encoded)) > 20<<20 {
 					return nil, geminiInputError("inline image exceeds 20 MiB")
@@ -64,6 +68,9 @@ func NormalizeGeminiGenerationInput(payload []byte, path string) ([]byte, error)
 					return nil, geminiInputError("inlineData.data must contain valid base64 bytes")
 				}
 			}
+		}
+		if !turnUsable {
+			return nil, geminiInputError("Gemini history contains an empty content turn")
 		}
 	}
 	if !usable {
@@ -78,6 +85,17 @@ func NormalizeGeminiGenerationInput(payload []byte, path string) ([]byte, error)
 		if !response {
 			return nil, geminiInputError("Gemini generation requires a final user message or function response")
 		}
+	}
+	root := strings.TrimSuffix(path, "contents")
+	functions, builtin := false, false
+	for _, tool := range gjson.GetBytes(payload, root+"tools").Array() {
+		functions = functions || len(tool.Get("functionDeclarations").Array()) > 0 || len(tool.Get("function_declarations").Array()) > 0
+		for _, kind := range []string{"googleSearch", "google_search", "codeExecution", "code_execution", "urlContext", "url_context"} {
+			builtin = builtin || tool.Get(kind).Exists()
+		}
+	}
+	if functions && builtin {
+		return sjson.SetBytes(payload, root+"toolConfig.includeServerSideToolInvocations", true)
 	}
 	return payload, nil
 }

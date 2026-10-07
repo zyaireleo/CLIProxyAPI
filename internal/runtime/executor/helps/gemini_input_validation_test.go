@@ -26,6 +26,9 @@ func TestGeminiInputPreservesHistoryAndSignature(t *testing.T) {
 	if got := gjson.GetBytes(out, "request.tools.#").Int(); got != 2 {
 		t.Fatal("tool combination lost")
 	}
+	if !gjson.GetBytes(out, "request.toolConfig.includeServerSideToolInvocations").Bool() {
+		t.Fatal("combined server/client tool invocation flag missing")
+	}
 }
 
 func TestGeminiInvalidInputStopsRecovery(t *testing.T) {
