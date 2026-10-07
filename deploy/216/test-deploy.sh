@@ -21,6 +21,7 @@ systemctl() {
       count=$((count + 1))
       echo "$count" > "$root/restarts"
       if [ "$SCENARIO" = restart-failure ] && [ "$count" = 1 ]; then return 1; fi
+      if [ "$SCENARIO" = secondary-failure ] && [ "$count" = 2 ]; then return 1; fi
       ;;
     is-active) return 0 ;;
     show)
@@ -50,7 +51,7 @@ mv() {
 }
 CHECK
 sed -n '/^ln -sfn "$release_dir"/,$p' "$script_dir/deploy.sh" >> "$fixture/check.sh"
-for scenario in success restart-failure http-failure crash-loop rollback-failure rollback-delayed; do
+for scenario in success restart-failure secondary-failure http-failure crash-loop rollback-failure rollback-delayed; do
   root="$fixture/$scenario"
   mkdir -p "$root/old" "$root/new"
   ln -s "$root/old" "$root/current"
@@ -60,10 +61,15 @@ for scenario in success restart-failure http-failure crash-loop rollback-failure
     test "$status" = 0
     test "$(readlink "$root/current")" = "$root/new"
     grep -q '/healthz' "$root/probes"
+    grep -q '8318/healthz' "$root/probes"
+    test "$(cat "$root/restarts")" = 2
   else
     test "$status" != 0
     test "$(readlink "$root/current")" = "$root/old"
-    test "$(cat "$root/restarts")" = 2
+    expected=3
+    [ "$scenario" != secondary-failure ] || expected=4
+    test "$(cat "$root/restarts")" = "$expected"
+    ! grep -qE '831[78]/( |$)' "$root/probes"
     if [ "$scenario" = rollback-failure ]; then
       grep -q 'manual intervention required' "$root/result"
     else

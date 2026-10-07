@@ -103,4 +103,4 @@ jobs:
             "$archive" "$DEPLOY_USER@$DEPLOY_HOST:/tmp/$release.tar.gz"
           ssh -i ~/.ssh/cpa_216 -p "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            "sudo bash -s -- '$release' '/tmp/$release.tar.gz' '$sha256'" < deploy/216/deploy.sh
+            "sudo bash -s -- '$release' '/tmp/$release.tar.gz' '$sha256' '$GITHUB_SHA'" < deploy/216/deploy.sh
