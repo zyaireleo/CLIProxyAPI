@@ -17,6 +17,10 @@ root=/opt/cliproxyapi
 incoming="$root/incoming/$release_name.tar.gz"
 release_dir="$root/releases/$release_name"
 old_target="$(readlink -f "$root/current" 2>/dev/null || true)"
+current_path="$root/current-cpa1"
+if [ -L "$current_path" ]; then
+  old_target="$(readlink -f "$current_path")"
+fi
 if [ "$old_target" = "$release_dir" ]; then
   echo "refusing to replace the active release directory" >&2
   exit 1
@@ -44,8 +48,12 @@ sha256sum "$release_dir/cli-proxy-api" > "$release_dir/SHA256SUMS"
 printf 'release=%s\ncommit=%s\narchive_sha256=%s\nbinary_sha256=%s\n' \
   "$release_name" "$commit_sha" "$archive_sha256" "$(sha256sum "$release_dir/cli-proxy-api" | awk '{print $1}')" > "$release_dir/BUILDINFO"
 
-ln -sfn "$release_dir" "$root/current.next"
-mv -Tf "$root/current.next" "$root/current"
+ln -sfn "$release_dir" "$current_path.next"
+mv -Tf "$current_path.next" "$current_path"
+install -d -m 0755 /etc/systemd/system/cliproxyapi.service.d
+printf '[Service]\nExecStart=\nExecStart=%s/cli-proxy-api -config /etc/cliproxyapi/config.yaml -local-model\n' \
+  "$current_path" > /etc/systemd/system/cliproxyapi.service.d/release-pointer.conf
+systemctl daemon-reload
 verify_service() {
   local attempt
   local service="$1" port="$2"
@@ -62,16 +70,15 @@ verify_service() {
 
 activate_services() {
   systemctl restart cliproxyapi.service && verify_service cliproxyapi.service 8317 || return 1
-  systemctl restart cliproxyapi2.service && verify_service cliproxyapi2.service 8318 || return 1
 }
 
 if ! activate_services; then
   echo "CPA restart or HTTP health verification failed; rolling back" >&2
   if [ -n "$old_target" ]; then
-    ln -sfn "$old_target" "$root/current.next"
-    mv -Tf "$root/current.next" "$root/current"
+    ln -sfn "$old_target" "$current_path.next"
+    mv -Tf "$current_path.next" "$current_path"
     rollback_ok=true
-    for service_port in 'cliproxyapi.service 8317' 'cliproxyapi2.service 8318'; do
+    for service_port in 'cliproxyapi.service 8317'; do
       read -r service port <<< "$service_port"
       if ! systemctl restart "$service" || ! verify_service "$service" "$port"; then
         rollback_ok=false
