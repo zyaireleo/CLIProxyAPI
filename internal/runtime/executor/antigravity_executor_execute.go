@@ -44,6 +44,21 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		return e.executeCompaction(ctx, auth, req, opts)
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	if strings.HasPrefix(baseModel, "gemini") {
+		proxy, isolate := "", false
+		if e.cfg != nil {
+			proxy = e.cfg.ProxyURL
+			isolate = e.cfg.AntigravityGeminiMaxAttempts > 0
+		}
+		index := ""
+		if auth != nil {
+			index = auth.EnsureIndex()
+			if auth.ProxyURL != "" {
+				proxy = auth.ProxyURL
+			}
+		}
+		ctx = geminiresponse.WithRoute(ctx, index, proxy, isolate)
+	}
 	if strings.HasPrefix(baseModel, "gemini") && e.cfg != nil {
 		ctx = geminiresponse.WithBudget(ctx, e.cfg.AntigravityGeminiMaxAttempts)
 	}
@@ -115,7 +130,11 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 
 	baseURL := resolveAntigravityRequestBaseURL(auth)
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
-	httpClient = reporter.TrackHTTPClient(httpClient)
+	if strings.HasPrefix(baseModel, "gemini") {
+		httpClient = reporter.TrackHTTPClientRoundTripOnly(httpClient)
+	} else {
+		httpClient = reporter.TrackHTTPClient(httpClient)
+	}
 	// Credential retry rounds are owned by the conductor. Perform one upstream
 	// request per credential so request-retry is not consumed twice.
 	requestPayload := translated
@@ -226,6 +245,9 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	}
 	cacheAntigravityReasoningReplayFromResponse(ctx, replayScope, requestPayload, bodyBytes)
 	bodyBytes = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, bodyBytes)
+	if strings.HasPrefix(baseModel, "gemini") {
+		helps.ObserveGeminiContent(reporter, bodyBytes)
+	}
 	reporter.ObserveResponseModel(bodyBytes)
 	reporter.Publish(ctx, helps.ParseAntigravityUsage(bodyBytes))
 	var param any
@@ -244,6 +266,21 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 
 func (e *AntigravityExecutor) executeCompaction(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	if strings.HasPrefix(baseModel, "gemini") {
+		proxy, isolate := "", false
+		if e.cfg != nil {
+			proxy = e.cfg.ProxyURL
+			isolate = e.cfg.AntigravityGeminiMaxAttempts > 0
+		}
+		index := ""
+		if auth != nil {
+			index = auth.EnsureIndex()
+			if auth.ProxyURL != "" {
+				proxy = auth.ProxyURL
+			}
+		}
+		ctx = geminiresponse.WithRoute(ctx, index, proxy, isolate)
+	}
 	payload := req.Payload
 	if len(payload) == 0 && len(opts.OriginalRequest) > 0 {
 		payload = opts.OriginalRequest
@@ -296,6 +333,21 @@ func (e *AntigravityExecutor) executeCompaction(ctx context.Context, auth *clipr
 // executeClaudeNonStream performs a claude non-streaming request to the Antigravity API.
 func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	if strings.HasPrefix(baseModel, "gemini") {
+		proxy, isolate := "", false
+		if e.cfg != nil {
+			proxy = e.cfg.ProxyURL
+			isolate = e.cfg.AntigravityGeminiMaxAttempts > 0
+		}
+		index := ""
+		if auth != nil {
+			index = auth.EnsureIndex()
+			if auth.ProxyURL != "" {
+				proxy = auth.ProxyURL
+			}
+		}
+		ctx = geminiresponse.WithRoute(ctx, index, proxy, isolate)
+	}
 	if !antigravityCoolingDisabled(auth, e.cfg) {
 		if inCooldown, remaining, errCooldown := antigravityIsInShortCooldownRequired(ctx, auth, baseModel, time.Now()); errCooldown != nil {
 			return resp, homeKVUnavailableStatusErr(errCooldown)
@@ -356,7 +408,11 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 
 	baseURL := resolveAntigravityRequestBaseURL(auth)
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
-	httpClient = reporter.TrackHTTPClient(httpClient)
+	if strings.HasPrefix(baseModel, "gemini") {
+		httpClient = reporter.TrackHTTPClientRoundTripOnly(httpClient)
+	} else {
+		httpClient = reporter.TrackHTTPClient(httpClient)
+	}
 
 	// Credential retry rounds are owned by the conductor. Perform one upstream
 	// request per credential so request-retry is not consumed twice.
@@ -495,6 +551,9 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 				reporter.Publish(ctx, detail)
 			}
 
+			if strings.HasPrefix(baseModel, "gemini") {
+				helps.ObserveGeminiContent(reporter, payload)
+			}
 			semanticSummary.Observe(payload)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Payload: payload}:
