@@ -197,6 +197,27 @@ class SmoothReleaseContracts(unittest.TestCase):
             self.assertTrue(all(call.kwargs.get("flush") is True for call in progress.call_args_list))
             self.assertEqual(now[0], 36.0)
 
+    def test_new_ingress_waits_for_asynchronous_listener_and_bounds_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            deployment = smooth.SmoothRelease("cpa1", temporary, pathlib.Path(temporary) / "state")
+            now = [0.0]
+            probes = []
+            def advance(seconds):
+                now[0] += seconds
+            def asynchronous_listener(port):
+                probes.append(port)
+                if now[0] < 2:
+                    raise ConnectionRefusedError("Fixture listener has not opened yet")
+            deployment.probe = asynchronous_listener
+            with patch.object(smooth.time, "monotonic", side_effect=lambda: now[0]), \
+                 patch.object(smooth.time, "sleep", side_effect=advance):
+                deployment.wait_local_ingress(8316)
+                self.assertEqual(probes, [8316, 8316, 8316])
+                deployment.probe = lambda _: (_ for _ in ()).throw(ConnectionRefusedError("Fixture permanent failure"))
+                with self.assertRaisesRegex(RuntimeError, "local ingress failed HTTP readiness"):
+                    deployment.wait_local_ingress(8316)
+            self.assertEqual(now[0], 32.0)
+
 
 if __name__ == "__main__":
     unittest.main()
