@@ -12,7 +12,13 @@ set -euo pipefail
 root="$TEST_ROOT"
 release_dir="$root/new"
 old_target="$root/old"
+current_path="$root/current-cpa1"
 release_name=candidate
+install() { :; }
+printf() {
+  if [ "${1:-}" = '[Service]\nExecStart=\nExecStart=%s/cli-proxy-api -config /etc/cliproxyapi/config.yaml -local-model\n' ]; then return 0; fi
+  builtin printf "$@"
+}
 systemctl() {
   case "$1" in
     restart)
@@ -24,7 +30,7 @@ systemctl() {
       ;;
     is-active) return 0 ;;
     show)
-      if [ "$SCENARIO" = crash-loop ] && [ "$(readlink "$root/current")" = "$release_dir" ]; then
+      if [ "$SCENARIO" = crash-loop ] && [ "$(readlink "$current_path")" = "$release_dir" ]; then
         echo 1
       else
         echo 0
@@ -35,8 +41,8 @@ systemctl() {
 curl() {
   echo "$*" >> "$root/probes"
   if [ "$SCENARIO" = rollback-failure ]; then return 1; fi
-  if [ "$SCENARIO" = http-failure ] && [ "$(readlink "$root/current")" = "$release_dir" ]; then return 1; fi
-  if [ "$SCENARIO" = rollback-delayed ] && [ "$(readlink "$root/current")" = "$release_dir" ]; then return 1; fi
+  if [ "$SCENARIO" = http-failure ] && [ "$(readlink "$current_path")" = "$release_dir" ]; then return 1; fi
+  if [ "$SCENARIO" = rollback-delayed ] && [ "$(readlink "$current_path")" = "$release_dir" ]; then return 1; fi
   if [ "$SCENARIO" = rollback-delayed ] && [ ! -f "$root/rollback-probed" ]; then
     touch "$root/rollback-probed"
     return 1
@@ -49,26 +55,31 @@ mv() {
   python3 -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' "$@"
 }
 CHECK
-sed -n '/^ln -sfn "$release_dir"/,$p' "$script_dir/deploy.sh" >> "$fixture/check.sh"
+sed -n '/^ln -sfn "$release_dir"/,$p' "$script_dir/deploy.sh" | sed 's@> /etc/systemd/system/cliproxyapi.service.d/release-pointer.conf@> "$root/release-pointer.conf"@' >> "$fixture/check.sh"
 for scenario in success restart-failure http-failure crash-loop rollback-failure rollback-delayed; do
   root="$fixture/$scenario"
   mkdir -p "$root/old" "$root/new"
   ln -s "$root/old" "$root/current"
+  ln -s "$root/old" "$root/current-cpa1"
   status=0
   TEST_ROOT="$root" SCENARIO="$scenario" bash "$fixture/check.sh" > "$root/result" 2>&1 || status=$?
   if [ "$scenario" = success ]; then
     test "$status" = 0
-    test "$(readlink "$root/current")" = "$root/new"
+    test "$(readlink "$root/current-cpa1")" = "$root/new"
     grep -q '/healthz' "$root/probes"
+    ! grep -q '8318' "$root/probes"
+    test "$(cat "$root/restarts")" = 1
   else
     test "$status" != 0
-    test "$(readlink "$root/current")" = "$root/old"
+    test "$(readlink "$root/current-cpa1")" = "$root/old"
     test "$(cat "$root/restarts")" = 2
+    ! grep -qE '831[78]/( |$)' "$root/probes"
     if [ "$scenario" = rollback-failure ]; then
       grep -q 'manual intervention required' "$root/result"
     else
       ! grep -q 'manual intervention required' "$root/result"
     fi
   fi
+  test "$(readlink "$root/current")" = "$root/old"
   echo "PASS: $scenario"
 done
