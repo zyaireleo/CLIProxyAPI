@@ -185,13 +185,26 @@ server {
             try:
                 command("nginx", "-t")
                 command("systemctl", "reload", "nginx")
-                self.probe(8316)
+                self.wait_local_ingress(8316)
             except Exception:
                 path.unlink()
                 command("nginx", "-t")
                 command("systemctl", "reload", "nginx")
                 raise
+        else:
+            self.wait_local_ingress(8316)
         prepare_cpa_consumers(self.state_dir)
+
+    def wait_local_ingress(self, port):
+        # Nginx reload returns before a new listener becomes ready.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                self.probe(port)
+                return
+            except (OSError, RuntimeError):
+                time.sleep(1)
+        raise RuntimeError("CPA1 local ingress failed HTTP readiness")
 
     def snapshot_routes(self):
         if self.component == "sub2api":
