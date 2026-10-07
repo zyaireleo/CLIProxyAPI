@@ -64,7 +64,7 @@ func TestGeminiTerminationMetadataDoesNotSetContentTimeOrExposeUnknownReason(t *
 }
 
 func TestGeminiNativeOutcomesDistinguishPolicyAndOutputLimitFromSuccess(t *testing.T) {
-	originalHooks := log.StandardLogger().Hooks
+	originalHooks := log.StandardLogger().ReplaceHooks(make(log.LevelHooks))
 	hook := logtest.NewGlobal()
 	t.Cleanup(func() { log.StandardLogger().ReplaceHooks(originalHooks) })
 	for _, tc := range []struct {
