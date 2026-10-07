@@ -46,3 +46,16 @@ func TestGeminiFirstContentTimingExcludesUsageOnlyFrames(t *testing.T) {
 		t.Fatal("first answer timing did not reflect delayed effective content")
 	}
 }
+
+// Final metadata is observed even when it carries no additional generated text.
+func TestGeminiTerminationMetadataDoesNotSetContentTimeOrExposeUnknownReason(t *testing.T) {
+	reporter := &UsageReporter{}
+	ObserveGeminiContent(reporter, []byte(`{"candidates":[{"finishReason":"STOP"}]}`))
+	if reporter.geminiTermination != "STOP" || reporter.IsTTFTSet() {
+		t.Fatalf("terminal metadata = %q; TTFT set = %v", reporter.geminiTermination, reporter.IsTTFTSet())
+	}
+	ObserveGeminiContent(reporter, []byte(`{"candidates":[{"finishReason":"user supplied arbitrary payload"}]}`))
+	if reporter.geminiTermination != "UNKNOWN" {
+		t.Fatal("unknown termination reason must not be logged verbatim")
+	}
+}

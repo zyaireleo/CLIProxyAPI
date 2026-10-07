@@ -50,6 +50,7 @@ type UsageReporter struct {
 	firstPacketSet      bool
 	ttftStart           time.Time
 	ttftSet             bool
+	geminiTermination   string // Guarded by ttftMu; contains a reason enum, never payload data.
 	once                sync.Once
 
 	responseModelMu sync.RWMutex

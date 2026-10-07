@@ -25,6 +25,20 @@ func ObserveGeminiContent(reporter *UsageReporter, payload []byte) {
 	}
 	var summary geminiresponse.Summary
 	summary.Observe(payload)
+	termination := summary.Finish
+	if summary.Block != "" {
+		termination = summary.Block
+	}
+	switch termination {
+	case "", "STOP", "MAX_TOKENS", "SAFETY", "RECITATION", "LANGUAGE", "OTHER", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "MALFORMED_FUNCTION_CALL", "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION", "IMAGE_OTHER", "NO_IMAGE", "UNEXPECTED_TOOL_CALL", "TOO_MANY_TOOL_CALLS":
+	default:
+		termination = "UNKNOWN"
+	}
+	if termination != "" {
+		reporter.ttftMu.Lock()
+		reporter.geminiTermination = termination
+		reporter.ttftMu.Unlock()
+	}
 	reporter.ObserveTokenEvent(summary.Answer || summary.Thought)
 }
 
@@ -102,6 +116,14 @@ func LogGeminiOutcome(ctx context.Context, model string, err error, reporters ..
 		return
 	}
 	firstContentMS := int64(-1)
+	termination := code
+	if len(reporters) > 0 && reporters[0] != nil {
+		reporters[0].ttftMu.RLock()
+		if reason := reporters[0].geminiTermination; reason != "" {
+			termination = reason
+		}
+		reporters[0].ttftMu.RUnlock()
+	}
 	if len(reporters) > 0 && reporters[0] != nil && reporters[0].IsTTFTSet() {
 		firstContentMS = reporters[0].ttftDuration().Milliseconds()
 	}
@@ -111,6 +133,6 @@ func LogGeminiOutcome(ctx context.Context, model string, err error, reporters ..
 		"exit_fingerprint": geminiresponse.RouteFromContext(ctx).ExitFingerprint,
 		"sub2api_trace_id": logging.GetSub2APITraceID(ctx),
 		"attempts":         geminiresponse.Attempts(ctx), "outcome": code,
-		"source": "upstream", "first_content_ms": firstContentMS, "termination_reason": code,
+		"source": "upstream", "first_content_ms": firstContentMS, "termination_reason": termination,
 	}).Info("gemini_generation_outcome")
 }
