@@ -66,7 +66,7 @@ jobs:
     if: github.event_name == 'push' || inputs.mode == 'deploy'
     runs-on: ubuntu-latest
     environment: production-216
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -100,8 +100,8 @@ jobs:
           test -n "$archive"
           release="$(basename "$archive" .tar.gz)"
           sha256="$(sha256sum "$archive" | awk '{print $1}')"
-          scp -i ~/.ssh/cpa_216 -P "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+          scp -i ~/.ssh/cpa_216 -P "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             "$archive" "$DEPLOY_USER@$DEPLOY_HOST:/tmp/$release.tar.gz"
-          ssh -i ~/.ssh/cpa_216 -p "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+          ssh -i ~/.ssh/cpa_216 -p "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
             "sudo bash -s -- '$release' '/tmp/$release.tar.gz' '$sha256' '$GITHUB_SHA'" < deploy/216/deploy.sh

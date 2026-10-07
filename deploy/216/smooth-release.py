@@ -140,11 +140,20 @@ class SmoothRelease:
         return len(result.stdout.splitlines())
 
     def drain(self, port):
-        deadline = time.monotonic() + self.drain_seconds
+        started = time.monotonic()
+        deadline = started + self.drain_seconds
+        next_progress = started
         # Two empty snapshots avoid stopping a process while a reload is settling.
         empty = 0
         while time.monotonic() < deadline:
-            empty = empty + 1 if self.connections(port) == 0 else 0
+            active = self.connections(port)
+            now = time.monotonic()
+            if now >= next_progress:
+                print(json.dumps({"component": self.component, "phase": "drain", "port": port,
+                                  "active_connections": active, "elapsed_seconds": int(now - started),
+                                  "remaining_seconds": max(0, int(deadline - now))}), flush=True)
+                next_progress = now + 15
+            empty = empty + 1 if active == 0 else 0
             if empty >= 2:
                 return True
             time.sleep(1)

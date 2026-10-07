@@ -180,6 +180,23 @@ class SmoothReleaseContracts(unittest.TestCase):
             with patch.object(smooth.time, "sleep"):
                 self.assertTrue(deployment.drain(8081))
 
+    def test_long_drain_reports_flushed_progress_without_stopping_requests(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            deployment = smooth.SmoothRelease("sub2api", temporary, pathlib.Path(temporary) / "state")
+            now = [0.0]
+            deployment.connections = lambda _: 1 if now[0] < 35 else 0
+            def advance(seconds):
+                now[0] += seconds
+            with patch.object(smooth.time, "monotonic", side_effect=lambda: now[0]), \
+                 patch.object(smooth.time, "sleep", side_effect=advance), \
+                 patch("builtins.print") as progress:
+                self.assertTrue(deployment.drain(8081))
+            records = [json.loads(call.args[0]) for call in progress.call_args_list]
+            self.assertEqual([record["elapsed_seconds"] for record in records], [0, 15, 30])
+            self.assertTrue(all(record["active_connections"] == 1 for record in records))
+            self.assertTrue(all(call.kwargs.get("flush") is True for call in progress.call_args_list))
+            self.assertEqual(now[0], 36.0)
+
 
 if __name__ == "__main__":
     unittest.main()
