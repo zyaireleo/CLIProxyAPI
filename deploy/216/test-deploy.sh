@@ -14,6 +14,16 @@ release_dir="$root/new"
 old_target="$root/old"
 current_path="$root/current-cpa1"
 release_name=candidate
+export CPA_216_SMOOTH_HELPER="$root/smooth-release.py"
+export CPA_216_SMOOTH_STATE_DIR="$root/state"
+python3() {
+  if [ "$1" = "$CPA_216_SMOOTH_HELPER" ]; then
+    echo "$3" >> "$root/bridge-events"
+    if [ "$SCENARIO" = bridge-failure ] && [ "$3" = begin ]; then return 1; fi
+    return 0
+  fi
+  command python3 "$@"
+}
 install() { :; }
 printf() {
   if [ "${1:-}" = '[Service]\nExecStart=\nExecStart=%s/cli-proxy-api -config /etc/cliproxyapi/config.yaml -local-model\n' ]; then return 0; fi
@@ -55,24 +65,31 @@ mv() {
   python3 -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' "$@"
 }
 CHECK
-sed -n '/^ln -sfn "$release_dir"/,$p' "$script_dir/deploy.sh" | sed 's@> /etc/systemd/system/cliproxyapi.service.d/release-pointer.conf@> "$root/release-pointer.conf"@' >> "$fixture/check.sh"
-for scenario in success restart-failure http-failure crash-loop rollback-failure rollback-delayed; do
+sed -n '/^SMOOTH_HELPER=/,$p' "$script_dir/deploy.sh" | sed 's@> /etc/systemd/system/cliproxyapi.service.d/release-pointer.conf@> "$root/release-pointer.conf"@' >> "$fixture/check.sh"
+for scenario in success bridge-failure restart-failure http-failure crash-loop rollback-failure rollback-delayed; do
   root="$fixture/$scenario"
   mkdir -p "$root/old" "$root/new"
   ln -s "$root/old" "$root/current"
   ln -s "$root/old" "$root/current-cpa1"
   status=0
   TEST_ROOT="$root" SCENARIO="$scenario" bash "$fixture/check.sh" > "$root/result" 2>&1 || status=$?
-  if [ "$scenario" = success ]; then
+  if [ "$scenario" = bridge-failure ]; then
+    test "$status" != 0
+    test ! -f "$root/restarts"
+    test "$(readlink "$root/current-cpa1")" = "$root/old"
+  elif [ "$scenario" = success ]; then
     test "$status" = 0
     test "$(readlink "$root/current-cpa1")" = "$root/new"
     grep -q '/healthz' "$root/probes"
     ! grep -q '8318' "$root/probes"
     test "$(cat "$root/restarts")" = 1
+    test "$(head -n 1 "$root/bridge-events")" = begin
+    grep -qx finish "$root/bridge-events"
   else
     test "$status" != 0
     test "$(readlink "$root/current-cpa1")" = "$root/old"
     test "$(cat "$root/restarts")" = 2
+    grep -qx hold "$root/bridge-events"
     ! grep -qE '831[78]/( |$)' "$root/probes"
     if [ "$scenario" = rollback-failure ]; then
       grep -q 'manual intervention required' "$root/result"
@@ -83,3 +100,4 @@ for scenario in success restart-failure http-failure crash-loop rollback-failure
   test "$(readlink "$root/current")" = "$root/old"
   echo "PASS: $scenario"
 done
+python3 "$script_dir/test-smooth-release.py"

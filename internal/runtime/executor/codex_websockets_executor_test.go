@@ -2752,6 +2752,7 @@ func TestCodexWebsockets_PingHandlerDoesNotBlockOnWriteMu(t *testing.T) {
 func TestCodexWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	serverPongCh := make(chan string, 1)
+	requestReceived := make(chan struct{}, 1)
 	inWriteHook := make(chan struct{})
 	pongDeliveredDuringWrite := make(chan struct{})
 
@@ -2787,6 +2788,10 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 					readErrCh <- errRead
 					return
 				}
+				select {
+				case requestReceived <- struct{}{}:
+				default:
+				}
 			}
 		}()
 
@@ -2813,7 +2818,16 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 			return
 		}
 
-		// Now send terminal response.
+		// Finish only after the unblocked client has uploaded its request.
+		select {
+		case <-requestReceived:
+		case <-readErrCh:
+			t.Error("connection closed before the request payload was received")
+			return
+		case <-time.After(2 * time.Second):
+			t.Error("timed out waiting for request payload after pong delivery")
+			return
+		}
 		respPayload := []byte(`{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[]}}`)
 		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
 	}))
@@ -2852,6 +2866,7 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 func TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	serverPongCh := make(chan string, 1)
+	requestReceived := make(chan struct{}, 1)
 	inWriteHook := make(chan struct{})
 	pongDeliveredDuringWrite := make(chan struct{})
 
@@ -2883,6 +2898,10 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 				if _, _, errRead := conn.ReadMessage(); errRead != nil {
 					return
 				}
+				select {
+				case requestReceived <- struct{}{}:
+				default:
+				}
 			}
 		}()
 
@@ -2909,6 +2928,13 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			return
 		}
 
+		// Finish only after the unblocked client has uploaded its request.
+		select {
+		case <-requestReceived:
+		case <-time.After(2 * time.Second):
+			t.Error("timed out waiting for request payload after pong delivery")
+			return
+		}
 		respPayload := []byte(`{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[]}}`)
 		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
 	}))
@@ -2944,6 +2970,7 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 func TestCodexWebsockets_KeepalivePingDuringUpload_NonstreamSessionless(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	serverPongCh := make(chan string, 1)
+	requestReceived := make(chan struct{}, 1)
 	inWriteHook := make(chan struct{})
 	pongDeliveredDuringWrite := make(chan struct{})
 
@@ -2975,6 +3002,10 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_NonstreamSessionless(t *testi
 				if _, _, errRead := conn.ReadMessage(); errRead != nil {
 					return
 				}
+				select {
+				case requestReceived <- struct{}{}:
+				default:
+				}
 			}
 		}()
 
@@ -3001,6 +3032,13 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_NonstreamSessionless(t *testi
 			return
 		}
 
+		// Finish only after the unblocked client has uploaded its request.
+		select {
+		case <-requestReceived:
+		case <-time.After(2 * time.Second):
+			t.Error("timed out waiting for request payload after pong delivery")
+			return
+		}
 		respPayload := []byte(`{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[]}}`)
 		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
 	}))

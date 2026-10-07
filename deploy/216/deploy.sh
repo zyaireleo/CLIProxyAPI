@@ -14,6 +14,8 @@ test -f "$archive_path"
 test "$archive_sha256" = "$(sha256sum "$archive_path" | awk '{print $1}')"
 
 root=/opt/cliproxyapi
+exec 9>"$root/.release.lock"
+flock -n 9 || { echo "another CPA1 release is active" >&2; exit 1; }
 incoming="$root/incoming/$release_name.tar.gz"
 release_dir="$root/releases/$release_name"
 old_target="$(readlink -f "$root/current" 2>/dev/null || true)"
@@ -48,6 +50,13 @@ sha256sum "$release_dir/cli-proxy-api" > "$release_dir/SHA256SUMS"
 printf 'release=%s\ncommit=%s\narchive_sha256=%s\nbinary_sha256=%s\n' \
   "$release_name" "$commit_sha" "$archive_sha256" "$(sha256sum "$release_dir/cli-proxy-api" | awk '{print $1}')" > "$release_dir/BUILDINFO"
 
+SMOOTH_HELPER="${CPA_216_SMOOTH_HELPER:-$release_dir/smooth-release.py}"
+SMOOTH_STATE_DIR="${CPA_216_SMOOTH_STATE_DIR:-$root/incoming/$release_name-state}"
+if ! python3 "$SMOOTH_HELPER" cpa1 begin "$release_dir" "$SMOOTH_STATE_DIR"; then
+  echo "CPA1 bridge readiness or drain failed; canonical service was not restarted" >&2
+  exit 1
+fi
+
 ln -sfn "$release_dir" "$current_path.next"
 mv -Tf "$current_path.next" "$current_path"
 install -d -m 0755 /etc/systemd/system/cliproxyapi.service.d
@@ -70,11 +79,16 @@ verify_service() {
 
 activate_services() {
   systemctl restart cliproxyapi.service && verify_service cliproxyapi.service 8317 || return 1
+  python3 "$SMOOTH_HELPER" cpa1 finish "$release_dir" "$SMOOTH_STATE_DIR" || return 1
 }
 
 if ! activate_services; then
   echo "CPA restart or HTTP health verification failed; rolling back" >&2
   if [ -n "$old_target" ]; then
+    if ! python3 "$SMOOTH_HELPER" cpa1 hold "$release_dir" "$SMOOTH_STATE_DIR"; then
+      echo "CPA1 rollback drain failed; preserve the healthy bridge and current process" >&2
+      exit 1
+    fi
     ln -sfn "$old_target" "$current_path.next"
     mv -Tf "$current_path.next" "$current_path"
     rollback_ok=true
@@ -86,6 +100,8 @@ if ! activate_services; then
     done
     if [ "$rollback_ok" = false ]; then
       echo "CPA rollback verification failed; manual intervention required" >&2
+    elif ! python3 "$SMOOTH_HELPER" cpa1 finish "$release_dir" "$SMOOTH_STATE_DIR"; then
+      echo "CPA1 rollback restored HTTP health; bridge cleanup still requires attention" >&2
     fi
   fi
   exit 1
