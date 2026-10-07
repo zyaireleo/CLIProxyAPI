@@ -68,7 +68,7 @@ func contentHasNamedPart(content gjson.Result, partKind, name string) bool {
 	return false
 }
 
-func assertIssue4959LeadingUserContents(t *testing.T, contents []gjson.Result) {
+func assertIssue4959PreservedContents(t *testing.T, contents []gjson.Result) {
 	t.Helper()
 	if len(contents) < 3 || contents[0].Get("role").String() != "model" || !contentHasNamedPart(contents[0], "functionCall", "Bash") {
 		t.Fatalf("model-first call changed: %v", contents)
@@ -79,6 +79,14 @@ func assertIssue4959LeadingUserContents(t *testing.T, contents []gjson.Result) {
 	if last := contents[len(contents)-1]; last.Get("parts.0.text").String() != "continue" {
 		t.Fatal("client continuation was lost")
 	}
+}
+
+func assertIssue4959LeadingUserContents(t *testing.T, contents []gjson.Result) {
+	t.Helper()
+	if len(contents) != 5 || contents[0].Get("role").String() != "user" || contents[0].Get("parts.0.text").String() != "" {
+		t.Fatalf("legacy leading user changed: %v", contents)
+	}
+	assertIssue4959PreservedContents(t, contents[1:])
 }
 
 func testAntigravityAuth(baseURL string) *cliproxyauth.Auth {
@@ -438,7 +446,7 @@ func TestAntigravityStreamPreservesIssue4959ResponsesHistory(t *testing.T) {
 			t.Fatalf("stream chunk error = %v", chunk.Err)
 		}
 	}
-	assertIssue4959LeadingUserContents(t, gjson.GetBytes(<-captured, "request.contents").Array())
+	assertIssue4959PreservedContents(t, gjson.GetBytes(<-captured, "request.contents").Array())
 }
 
 func issue5358ResponsesTrailingReasoningPayload() []byte {
@@ -791,16 +799,16 @@ func TestAntigravityExecutorCountTokensSanitizesGeminiToolHistory(t *testing.T) 
 	if len(upstreamBody) == 0 {
 		t.Fatal("countTokens upstream body was not captured")
 	}
-	if got := gjson.GetBytes(upstreamBody, "request.contents.1.parts.0.thoughtSignature").String(); got != nativeSignature {
+	if got := gjson.GetBytes(upstreamBody, "request.contents.0.parts.0.thoughtSignature").String(); got != nativeSignature {
 		t.Fatalf("first call signature = %q, want native signature; body=%s", got, upstreamBody)
 	}
-	if signature := gjson.GetBytes(upstreamBody, "request.contents.1.parts.1.thoughtSignature"); signature.Exists() {
+	if signature := gjson.GetBytes(upstreamBody, "request.contents.0.parts.1.thoughtSignature"); signature.Exists() {
 		t.Fatalf("second sibling bypass was not removed: %s", upstreamBody)
 	}
-	if got := gjson.GetBytes(upstreamBody, "request.contents.2.role").String(); got != "model" {
+	if got := gjson.GetBytes(upstreamBody, "request.contents.1.role").String(); got != "model" {
 		t.Fatalf("functionResponse role = %q, want model; body=%s", got, upstreamBody)
 	}
-	if got := gjson.GetBytes(upstreamBody, "request.contents.2.parts.0.functionResponse.id").String(); got != "call-1" {
+	if got := gjson.GetBytes(upstreamBody, "request.contents.1.parts.0.functionResponse.id").String(); got != "call-1" {
 		t.Fatalf("first functionResponse.id = %q, want call-1; body=%s", got, upstreamBody)
 	}
 	if errPairing := internalsignature.ValidateGeminiFunctionCallPairing(upstreamBody); errPairing != nil {
@@ -860,7 +868,7 @@ func TestAntigravityExecutorCountTokensReconstructsCompactedClaudeToolCall(t *te
 	if call.Get("functionCall.id").String() != nativeID || call.Get("functionCall.name").String() != "Bash" || call.Get("thoughtSignature").String() != nativeSignature {
 		t.Fatalf("native function call provenance was not reconstructed: %s", upstreamBody)
 	}
-	response := gjson.GetBytes(upstreamBody, "request.contents.2.parts.0.functionResponse")
+	response := gjson.GetBytes(upstreamBody, "request.contents.1.parts.0.functionResponse")
 	if response.Get("id").String() != nativeID || response.Get("name").String() != "Bash" {
 		t.Fatalf("native function response provenance was not reconstructed: %s", upstreamBody)
 	}
