@@ -15,6 +15,7 @@ type Error struct {
 	Message    string
 	Status     int
 	Stop       bool
+	RouteFault bool
 	NativeBody []byte
 }
 

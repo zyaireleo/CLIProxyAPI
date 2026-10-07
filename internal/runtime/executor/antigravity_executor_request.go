@@ -68,6 +68,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	}
 
 	useAntigravitySchema := strings.Contains(modelName, "claude") || strings.Contains(modelName, "gemini-3-pro") || strings.Contains(modelName, "gemini-3.1-pro")
+	preserveGeminiOutputLimit := e.cfg != nil && e.cfg.AntigravityGeminiMaxAttempts > 0 && strings.HasPrefix(strings.ToLower(modelName), "gemini")
 	var (
 		bodyReader io.Reader
 		payloadLog []byte
@@ -78,7 +79,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		if strings.Contains(modelName, "claude") {
 			updated, _ := sjson.SetBytes([]byte(payloadStr), "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
 			payloadStr = string(updated)
-		} else {
+		} else if !preserveGeminiOutputLimit {
 			payloadStr, _ = sjson.Delete(payloadStr, "request.generationConfig.maxOutputTokens")
 		}
 
@@ -90,7 +91,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	} else {
 		if strings.Contains(modelName, "claude") {
 			payload, _ = sjson.SetBytes(payload, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
-		} else {
+		} else if !preserveGeminiOutputLimit {
 			payload, _ = sjson.DeleteBytes(payload, "request.generationConfig.maxOutputTokens")
 		}
 

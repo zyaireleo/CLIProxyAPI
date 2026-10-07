@@ -26,7 +26,7 @@ func TestGeminiNativeImagesModels(t *testing.T) {
 }
 
 func TestBuildGeminiImageRequest(t *testing.T) {
-	req, err := buildGeminiImageRequest("gemini-3.1-flash-image", "edit this", "1792x1024", []string{"data:image/png;base64,AA=="})
+	req, err := buildGeminiImageRequest("gemini-3.1-flash-image", "edit this", "1792x1024", []string{"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+cL1kAAAAASUVORK5CYII="})
 	if err != nil {
 		t.Fatalf("buildGeminiImageRequest error: %v", err)
 	}
@@ -106,5 +106,19 @@ func TestValidateGeminiImageSize(t *testing.T) {
 	}
 	if err := validateGeminiImageSize("500x500"); err == nil {
 		t.Fatal("expected unsupported size to fail")
+	}
+}
+
+func TestGeminiImageUnsupportedParameters(t *testing.T) {
+	for _, name := range []string{"mask", "output_format", "output_compression", "partial_images", "style", "moderation", "input_fidelity"} {
+		if err := validateGeminiImageExtraOptions(func(key string) bool { return key == name }); err == nil {
+			t.Fatalf("accepted %s", name)
+		}
+	}
+	if _, err := geminiImageDataPart("data:text/plain;base64,aGVsbG8="); err == nil {
+		t.Fatal("accepted non-image data")
+	}
+	if _, err := geminiImageDataPart("data:image/png;base64,AA=="); err == nil {
+		t.Fatal("accepted invalid image bytes")
 	}
 }

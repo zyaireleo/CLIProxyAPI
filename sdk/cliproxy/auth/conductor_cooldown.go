@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/geminiresponse"
 	"io"
 	"net"
 	"net/http"
@@ -1461,7 +1462,10 @@ func resultErrorFromError(err error) *Error {
 	if resultErr.HTTPStatus == 0 {
 		resultErr.HTTPStatus = statusCodeFromError(err)
 	}
+	var regional *geminiresponse.Error
 	switch {
+	case errors.As(err, &regional) && regional.RouteFault:
+		resultErr.Code = "gemini_regional_route"
 	case isExplicitModelNotFoundError(err, ""):
 		if resultErr.Code == "" || resultErr.Code == requestScopedErrorCode {
 			resultErr.Code = "model_not_found"
@@ -1488,6 +1492,9 @@ func resultErrorFromError(err error) *Error {
 // Connection lifecycle is intentionally separate from request_scoped so transport
 // drops do not also stop credential rotation via isRequestInvalidError.
 func shouldSkipCredentialCooldown(err *Error) bool {
+	if err != nil && err.Code == "gemini_regional_route" {
+		return true
+	}
 	if err != nil && err.Code == ErrorCodeForceCooldown {
 		return false
 	}
@@ -2119,6 +2126,10 @@ func isMissingModelPhrase(value string) bool {
 // error that should neither rotate nor penalize credentials. Model-support
 // errors remain eligible for alternate routing and keep their model-level state.
 func isRequestInvalidError(err error) bool {
+	var regional *geminiresponse.Error
+	if errors.As(err, &regional) && regional.RouteFault {
+		return false
+	}
 	if err == nil {
 		return false
 	}
