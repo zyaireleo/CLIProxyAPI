@@ -662,6 +662,10 @@ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 	}
 	stream := gjson.GetBytes(rawJSON, "stream").Bool()
 	if isGeminiNativeImagesModel(imageModel) {
+		if err := validateGeminiImageExtraOptions(func(name string) bool { return gjson.GetBytes(rawJSON, name).Exists() }); err != nil {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
+			return
+		}
 		if err := validateGeminiImageOptions(responseFormat, gjson.GetBytes(rawJSON, "n").Int(), gjson.GetBytes(rawJSON, "quality").String(), gjson.GetBytes(rawJSON, "background").String()); err != nil {
 			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
 			return
@@ -820,6 +824,10 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 	}
 	stream := parseBoolField(c.PostForm("stream"), false)
 	if isGeminiNativeImagesModel(imageModel) {
+		if err := validateGeminiImageExtraOptions(func(name string) bool { _, exists := form.Value[name]; return exists || len(form.File[name]) > 0 }); err != nil {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
+			return
+		}
 		if err := validateGeminiImageOptions(responseFormat, parseIntField(c.PostForm("n"), 0), c.PostForm("quality"), c.PostForm("background")); err != nil {
 			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
 			return
@@ -1026,6 +1034,10 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 		return
 	}
 	if isGeminiNativeImagesModel(imageModel) {
+		if err := validateGeminiImageExtraOptions(func(name string) bool { return gjson.GetBytes(rawJSON, name).Exists() }); err != nil {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
+			return
+		}
 		if err := validateGeminiImageOptions(responseFormat, gjson.GetBytes(rawJSON, "n").Int(), gjson.GetBytes(rawJSON, "quality").String(), gjson.GetBytes(rawJSON, "background").String()); err != nil {
 			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
 			return

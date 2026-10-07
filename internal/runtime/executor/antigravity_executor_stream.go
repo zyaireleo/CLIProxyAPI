@@ -129,7 +129,23 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			return nil, err
 		}
 	}
-	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
+	if strings.HasPrefix(strings.ToLower(baseModel), "gemini") {
+		requestPayload, err = helps.NormalizeGeminiGenerationInput(requestPayload, "request.contents")
+		if err != nil {
+			return nil, err
+		}
+		if modelInfo != nil && modelInfo.InputTokenLimit > 0 {
+			err = helps.CheckGeminiContext(requestPayload, modelInfo.InputTokenLimit, func() (int64, error) {
+				countOpts := opts
+				countOpts.ResponseFormat = sdktranslator.FormatGemini
+				counted, countErr := e.CountTokens(ctx, auth, req, countOpts)
+				return gjson.GetBytes(counted.Payload, "totalTokens").Int(), countErr
+			})
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
 	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
 	if errReq != nil {
 		err = errReq
@@ -218,7 +234,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		}
 		emitFailure := func(failure error) {
 			geminiresponse.SaveFailure(ctx, failure)
-			helps.LogGeminiOutcome(ctx, baseModel, failure)
+			helps.LogGeminiOutcome(ctx, baseModel, failure, reporter)
 			reporter.PublishFailure(ctx, failure)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: failure}:
@@ -292,7 +308,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 						return
 					}
 				}
-				helps.LogGeminiOutcome(ctx, baseModel, nil)
+				helps.LogGeminiOutcome(ctx, baseModel, nil, reporter)
 			}
 			// Only a clean end of stream may produce a synthetic terminal event.
 			// Translating [DONE] after a read error would report a truncated

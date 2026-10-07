@@ -49,9 +49,6 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	}
 	defer func() {
 		geminiresponse.SaveFailure(ctx, err)
-		if strings.HasPrefix(baseModel, "gemini") {
-			helps.LogGeminiOutcome(ctx, baseModel, err)
-		}
 	}()
 	if !antigravityCoolingDisabled(auth, e.cfg) {
 		if inCooldown, remaining, errCooldown := antigravityIsInShortCooldownRequired(ctx, auth, baseModel, time.Now()); errCooldown != nil {
@@ -70,6 +67,11 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
+	defer func() {
+		if strings.HasPrefix(baseModel, "gemini") {
+			helps.LogGeminiOutcome(ctx, baseModel, err, reporter)
+		}
+	}()
 
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -132,7 +134,23 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 			return resp, err
 		}
 	}
-	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
+	if strings.HasPrefix(strings.ToLower(baseModel), "gemini") {
+		requestPayload, err = helps.NormalizeGeminiGenerationInput(requestPayload, "request.contents")
+		if err != nil {
+			return resp, err
+		}
+		if modelInfo != nil && modelInfo.InputTokenLimit > 0 {
+			err = helps.CheckGeminiContext(requestPayload, modelInfo.InputTokenLimit, func() (int64, error) {
+				countOpts := opts
+				countOpts.ResponseFormat = sdktranslator.FormatGemini
+				counted, countErr := e.CountTokens(ctx, auth, req, countOpts)
+				return gjson.GetBytes(counted.Payload, "totalTokens").Int(), countErr
+			})
+			if err != nil {
+				return resp, err
+			}
+		}
+	}
 
 	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, false, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
 	if errReq != nil {
@@ -290,6 +308,11 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
+	defer func() {
+		if strings.HasPrefix(baseModel, "gemini") {
+			helps.LogGeminiOutcome(ctx, baseModel, err, reporter)
+		}
+	}()
 
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -353,7 +376,23 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 			return resp, err
 		}
 	}
-	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
+	if strings.HasPrefix(strings.ToLower(baseModel), "gemini") {
+		requestPayload, err = helps.NormalizeGeminiGenerationInput(requestPayload, "request.contents")
+		if err != nil {
+			return resp, err
+		}
+		if modelInfo != nil && modelInfo.InputTokenLimit > 0 {
+			err = helps.CheckGeminiContext(requestPayload, modelInfo.InputTokenLimit, func() (int64, error) {
+				countOpts := opts
+				countOpts.ResponseFormat = sdktranslator.FormatGemini
+				counted, countErr := e.CountTokens(ctx, auth, req, countOpts)
+				return gjson.GetBytes(counted.Payload, "totalTokens").Int(), countErr
+			})
+			if err != nil {
+				return resp, err
+			}
+		}
+	}
 	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
 	if errReq != nil {
 		err = errReq
