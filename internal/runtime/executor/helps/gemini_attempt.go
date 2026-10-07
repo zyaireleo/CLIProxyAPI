@@ -34,11 +34,13 @@ func ObserveGeminiContent(reporter *UsageReporter, payload []byte) {
 	default:
 		termination = "UNKNOWN"
 	}
+	reporter.ttftMu.Lock()
+	reporter.geminiAnswer = reporter.geminiAnswer || summary.Answer
+	reporter.geminiPolicyBlocked = reporter.geminiPolicyBlocked || summary.Block != ""
 	if termination != "" {
-		reporter.ttftMu.Lock()
 		reporter.geminiTermination = termination
-		reporter.ttftMu.Unlock()
 	}
+	reporter.ttftMu.Unlock()
 	reporter.ObserveTokenEvent(summary.Answer || summary.Thought)
 }
 
@@ -112,9 +114,6 @@ func LogGeminiOutcome(ctx context.Context, model string, err error, reporters ..
 			code = "client_cancelled"
 		}
 	}
-	if err == nil && !sampleGeminiSuccess(ctx) {
-		return
-	}
 	firstContentMS := int64(-1)
 	termination := code
 	if len(reporters) > 0 && reporters[0] != nil {
@@ -122,7 +121,17 @@ func LogGeminiOutcome(ctx context.Context, model string, err error, reporters ..
 		if reason := reporters[0].geminiTermination; reason != "" {
 			termination = reason
 		}
+		if err == nil {
+			if reporters[0].geminiPolicyBlocked {
+				code = "content_policy_block"
+			} else if !reporters[0].geminiAnswer && reporters[0].geminiTermination == "MAX_TOKENS" {
+				code = "upstream_output_limit"
+			}
+		}
 		reporters[0].ttftMu.RUnlock()
+	}
+	if code == "success" && !sampleGeminiSuccess(ctx) {
+		return
 	}
 	if len(reporters) > 0 && reporters[0] != nil && reporters[0].IsTTFTSet() {
 		firstContentMS = reporters[0].ttftDuration().Milliseconds()

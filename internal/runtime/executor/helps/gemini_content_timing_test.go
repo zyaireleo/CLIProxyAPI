@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
 func TestGeminiFirstContentTimingExcludesUsageOnlyFrames(t *testing.T) {
@@ -57,5 +60,29 @@ func TestGeminiTerminationMetadataDoesNotSetContentTimeOrExposeUnknownReason(t *
 	ObserveGeminiContent(reporter, []byte(`{"candidates":[{"finishReason":"user supplied arbitrary payload"}]}`))
 	if reporter.geminiTermination != "UNKNOWN" {
 		t.Fatal("unknown termination reason must not be logged verbatim")
+	}
+}
+
+func TestGeminiNativeOutcomesDistinguishPolicyAndOutputLimitFromSuccess(t *testing.T) {
+	originalHooks := log.StandardLogger().Hooks
+	hook := logtest.NewGlobal()
+	t.Cleanup(func() { log.StandardLogger().ReplaceHooks(originalHooks) })
+	for _, tc := range []struct {
+		name, payload, outcome string
+	}{
+		{"policy", `{"promptFeedback":{"blockReason":"SAFETY"}}`, "content_policy_block"},
+		{"thought only limit", `{"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"thought":true,"text":"private thinking"}]}}]}`, "upstream_output_limit"},
+		{"partial answer limit", `{"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"text":"partial answer"}]}}]}`, "success"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hook.Reset()
+			reporter := &UsageReporter{requestedAt: time.Now()}
+			ObserveGeminiContent(reporter, []byte(tc.payload))
+			LogGeminiOutcome(context.Background(), "gemini-fixture", nil, reporter)
+			entry := hook.LastEntry()
+			if entry == nil || entry.Message != "gemini_generation_outcome" || entry.Data["outcome"] != tc.outcome {
+				t.Fatalf("native outcome entry = %v, want %s", entry, tc.outcome)
+			}
+		})
 	}
 }

@@ -51,6 +51,8 @@ type UsageReporter struct {
 	ttftStart           time.Time
 	ttftSet             bool
 	geminiTermination   string // Guarded by ttftMu; contains a reason enum, never payload data.
+	geminiAnswer        bool   // Guarded by ttftMu; records semantic output without retaining payloads.
+	geminiPolicyBlocked bool   // Guarded by ttftMu; native policy bodies remain protocol-compatible.
 	once                sync.Once
 
 	responseModelMu sync.RWMutex
