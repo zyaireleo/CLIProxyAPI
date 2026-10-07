@@ -36,7 +36,8 @@ func DoGeminiGeneration(ctx context.Context, client *http.Client, req *http.Requ
 	}
 	log.WithFields(log.Fields{
 		"request_id": logging.GetRequestID(ctx), "native_model": model,
-		"attempt": attempt, "source": "upstream", "status": status,
+		"sub2api_trace_id": logging.GetSub2APITraceID(ctx),
+		"attempt":          attempt, "source": "upstream", "status": status,
 		"headers_ms": time.Since(start).Milliseconds(),
 	}).Info("gemini_generation_attempt")
 	return resp, err
@@ -55,6 +56,7 @@ func LogGeminiOutcome(ctx context.Context, model string, err error) {
 	}
 	log.WithFields(log.Fields{
 		"request_id": logging.GetRequestID(ctx), "native_model": model,
-		"attempts": geminiresponse.Attempts(ctx), "outcome": code,
+		"sub2api_trace_id": logging.GetSub2APITraceID(ctx),
+		"attempts":         geminiresponse.Attempts(ctx), "outcome": code,
 	}).Info("gemini_generation_outcome")
 }

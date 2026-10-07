@@ -213,7 +213,7 @@ func (h *OpenAIAPIHandler) handleGeminiNativeImages(c *gin.Context, model, promp
 	}
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	defer cliCancel()
-	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx, model)
 	defer stopKeepAlive()
 	resp, upstreamHeaders, errMsg := h.ExecuteImageWithAuthManager(cliCtx, "gemini", imagesModelBase(model), rawJSON, "")
 	if errMsg != nil {
