@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/geminiresponse"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -43,6 +44,15 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		return e.executeCompaction(ctx, auth, req, opts)
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	if strings.HasPrefix(baseModel, "gemini") && e.cfg != nil {
+		ctx = geminiresponse.WithBudget(ctx, e.cfg.AntigravityGeminiMaxAttempts)
+	}
+	defer func() {
+		geminiresponse.SaveFailure(ctx, err)
+		if strings.HasPrefix(baseModel, "gemini") {
+			helps.LogGeminiOutcome(ctx, baseModel, err)
+		}
+	}()
 	if !antigravityCoolingDisabled(auth, e.cfg) {
 		if inCooldown, remaining, errCooldown := antigravityIsInShortCooldownRequired(ctx, auth, baseModel, time.Now()); errCooldown != nil {
 			return resp, homeKVUnavailableStatusErr(errCooldown)
@@ -130,7 +140,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		return resp, err
 	}
 
-	httpResp, errDo := httpClient.Do(httpReq)
+	httpResp, errDo := helps.DoGeminiGeneration(ctx, httpClient, httpReq, baseModel)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
@@ -179,11 +189,20 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 			// Report the upstream failure rather than the cleanup failure.
 			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
 		}
-		err = newAntigravityStatusErr(httpResp.StatusCode, bodyBytes)
+		err = newAntigravityStatusErr(httpResp.StatusCode, bodyBytes, httpResp.Header)
 		return resp, err
 	}
 
 	// Success
+	if strings.HasPrefix(baseModel, "gemini") {
+		var summary geminiresponse.Summary
+		summary.Observe(bodyBytes)
+		requireImage := e.cfg != nil && e.cfg.AntigravityGeminiMaxAttempts > 0 && antigravityImageModelName(baseModel) && !antigravityImageOutputDisabled(originalPayload)
+		if failure := summary.Failure(requireImage, responseFormat == sdktranslator.FormatGemini); failure != nil {
+			reporter.Publish(ctx, helps.ParseAntigravityUsage(bodyBytes))
+			return resp, failure
+		}
+	}
 	if useCredits {
 		clearAntigravityCreditsFailureState(auth)
 	}
@@ -341,7 +360,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		return resp, err
 	}
 
-	httpResp, errDo := httpClient.Do(httpReq)
+	httpResp, errDo := helps.DoGeminiGeneration(ctx, httpClient, httpReq, baseModel)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
@@ -396,11 +415,12 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 			// Report the upstream failure rather than the cleanup failure.
 			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
 		}
-		err = newAntigravityStatusErr(httpResp.StatusCode, bodyBytes)
+		err = newAntigravityStatusErr(httpResp.StatusCode, bodyBytes, httpResp.Header)
 		return resp, err
 	}
 
 	// Stream success
+	var semanticSummary geminiresponse.Summary
 	if useCredits {
 		clearAntigravityCreditsFailureState(auth)
 	}
@@ -436,12 +456,20 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 				reporter.Publish(ctx, detail)
 			}
 
-			out <- cliproxyexecutor.StreamChunk{Payload: payload}
+			semanticSummary.Observe(payload)
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Payload: payload}:
+			case <-ctx.Done():
+				return
+			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case <-ctx.Done():
+			}
 		} else {
 			if replayAccumulator != nil {
 				replayAccumulator.Commit(ctx)
@@ -461,6 +489,12 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		}
 	}
 	resp = cliproxyexecutor.Response{Payload: e.convertStreamToNonStream(buffer.Bytes())}
+	if strings.HasPrefix(baseModel, "gemini") {
+		requireImage := e.cfg != nil && e.cfg.AntigravityGeminiMaxAttempts > 0 && antigravityImageModelName(baseModel) && !antigravityImageOutputDisabled(originalPayload)
+		if failure := semanticSummary.Failure(requireImage, responseFormat == sdktranslator.FormatGemini); failure != nil {
+			return resp, failure
+		}
+	}
 
 	resp.Payload = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, resp.Payload)
 	reporter.ObserveResponseModel(resp.Payload)
@@ -556,7 +590,7 @@ func (e *AntigravityExecutor) convertStreamToNonStream(stream []byte) []byte {
 		root := gjson.ParseBytes(trimmed)
 		responseNode := root.Get("response")
 		if !responseNode.Exists() {
-			if root.Get("candidates").Exists() {
+			if root.Get("candidates").Exists() || root.Get("promptFeedback").Exists() {
 				responseNode = root
 			} else {
 				continue
@@ -627,6 +661,14 @@ func (e *AntigravityExecutor) convertStreamToNonStream(stream []byte) []byte {
 		}
 	}
 	flushPending()
+
+	if len(parts) == 0 && gjson.Get(responseTemplate, "promptFeedback.blockReason").String() != "" {
+		output, _ := sjson.SetRawBytes([]byte("{\"response\":{},\"traceId\":\"\"}"), "response", []byte(responseTemplate))
+		if traceID != "" {
+			output, _ = sjson.SetBytes(output, "traceId", traceID)
+		}
+		return output
+	}
 
 	if responseTemplate == "" {
 		responseTemplate = `{"candidates":[{"content":{"role":"model","parts":[]}}]}`
