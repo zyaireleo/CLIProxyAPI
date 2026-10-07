@@ -11,10 +11,11 @@ import (
 )
 
 type Error struct {
-	Code    string
-	Message string
-	Status  int
-	Stop    bool
+	Code       string
+	Message    string
+	Status     int
+	Stop       bool
+	NativeBody []byte
 }
 
 func (e *Error) Error() string {
@@ -30,6 +31,8 @@ type Summary struct {
 	Block, Finish          string
 	ErrorStatus            int
 	ErrorMessage           string
+	ErrorCode              string
+	ErrorBody              []byte
 }
 
 func (s *Summary) Observe(body []byte) {
@@ -49,6 +52,14 @@ func (s *Summary) Observe(body []byte) {
 			s.ErrorStatus = http.StatusBadGateway
 		}
 		s.ErrorMessage = object.Get("message").String()
+		s.ErrorCode = object.Get("status").String()
+		if code := object.Get("code"); code.Type == gjson.String {
+			s.ErrorCode = code.String()
+		}
+		if s.ErrorCode == "" {
+			s.ErrorCode = "upstream_error"
+		}
+		s.ErrorBody = []byte(r.Raw)
 	}
 	if block := r.Get("promptFeedback.blockReason").String(); block != "" && block != "BLOCKED_REASON_UNSPECIFIED" {
 		s.Block = block
@@ -93,7 +104,7 @@ func (s *Summary) Observe(body []byte) {
 
 func (s Summary) Failure(requireImage, native bool) error {
 	if s.ErrorStatus != 0 {
-		return &Error{Code: "upstream_error", Message: s.ErrorMessage, Status: s.ErrorStatus, Stop: s.ErrorStatus < 500 && s.ErrorStatus != 429}
+		return &Error{Code: s.ErrorCode, Message: s.ErrorMessage, Status: s.ErrorStatus, Stop: s.ErrorStatus < 500 && s.ErrorStatus != 429, NativeBody: s.ErrorBody}
 	}
 	if s.Block != "" {
 		if native {
