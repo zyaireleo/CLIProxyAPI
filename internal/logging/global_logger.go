@@ -55,6 +55,10 @@ var quotedLogFields = map[string]struct{}{
 
 var pluginPathFieldOrder = []string{"path", "active_path", "retired_path"}
 
+var geminiDiagnosticFieldOrder = []string{
+	"native_model", "auth_index", "exit_fingerprint", "attempt", "attempts", "source", "status", "headers_ms", "outcome", "first_content_ms", "termination_reason",
+}
+
 func formatLogFieldValue(key string, value any) string {
 	if _, quoted := quotedLogFields[key]; quoted {
 		if stringValue, ok := value.(string); ok {
@@ -94,6 +98,17 @@ func (m *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 		for _, k := range logFieldOrder {
 			if v, ok := entry.Data[k]; ok {
 				fields = append(fields, fmt.Sprintf("%s=%s", k, formatLogFieldValue(k, v)))
+			}
+		}
+		if message == "gemini_generation_attempt" || message == "gemini_generation_outcome" {
+			for _, key := range geminiDiagnosticFieldOrder {
+				if value, ok := entry.Data[key]; ok {
+					formattedValue := fmt.Sprint(value)
+					if text, isString := value.(string); isString {
+						formattedValue = strconv.Quote(text)
+					}
+					fields = append(fields, key+"="+formattedValue)
+				}
 			}
 		}
 		if pluginID, ok := entry.Data["plugin_id"]; ok && strings.TrimSpace(fmt.Sprint(pluginID)) != "" {
