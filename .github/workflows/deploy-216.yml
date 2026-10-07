@@ -50,7 +50,8 @@ jobs:
             -o "$staging/cli-proxy-api" ./cmd/server
           file "$staging/cli-proxy-api" | grep -q 'dynamically linked'
           ldd "$staging/cli-proxy-api"
-          tar -C "$staging" -czf "$archive" cli-proxy-api
+          cp deploy/216/smooth-release.py "$staging/smooth-release.py"
+          tar -C "$staging" -czf "$archive" cli-proxy-api smooth-release.py
           echo "release=$release" >> "$GITHUB_OUTPUT"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
           echo "sha256=$(sha256sum "$archive" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
