@@ -38,6 +38,55 @@ func TestLogFormatterPrintsSub2APITraceID(t *testing.T) {
 	}
 }
 
+func TestLogFormatterPreservesImageAuditFields(t *testing.T) {
+	for _, message := range []string{"antigravity image generation outcome", "antigravity image generation failed"} {
+		t.Run(message, func(t *testing.T) {
+			entry := log.NewEntry(log.New()).WithFields(log.Fields{
+				"request_id":       "cpa-request-123",
+				"sub2api_trace_id": "sub2api:client:request-123",
+				"model":            "gemini-3.1-flash-image",
+				"auth_ref":         "0a1b2c3d4e5f",
+				"attempt":          4,
+				"outcome":          "upstream_quota_exhausted",
+				"images":           0,
+				"finish_reason":    "STOP",
+				"block_reason":     "BLOCK_REASON_UNSPECIFIED",
+				"status":           429,
+				"duration_ms":      int64(1234),
+				"cooldown_until":   "2026-10-09T09:00:00Z",
+				"auth_id":          "private-account-identity",
+				"access_token":     "private-access-token",
+				"prompt":           "private-buyer-prompt",
+				"reference_image":  "private-reference-image",
+				"raw_response":     "private-upstream-response",
+			})
+			entry.Message = message
+			formatted, errFormat := (&LogFormatter{}).Format(entry)
+			if errFormat != nil {
+				t.Fatal(errFormat)
+			}
+			line := string(formatted)
+			for _, want := range []string{
+				"[cpa-request-123]", "model=gemini-3.1-flash-image",
+				"sub2api_trace_id=sub2api:client:request-123", "auth_ref=0a1b2c3d4e5f",
+				"attempt=4", "outcome=upstream_quota_exhausted", "images=0",
+				"finish_reason=STOP", "block_reason=BLOCK_REASON_UNSPECIFIED",
+				"status=429", "duration_ms=1234", "cooldown_until=2026-10-09T09:00:00Z",
+			} {
+				if !strings.Contains(line, want) {
+					t.Fatalf("image audit log %q is missing %s", line, want)
+				}
+			}
+			if strings.Contains(line, "private-") {
+				t.Fatalf("image audit log exposed an unapproved private field: %q", line)
+			}
+			if strings.Count(line, "\n") != 1 {
+				t.Fatalf("image audit log must occupy one line: %q", line)
+			}
+		})
+	}
+}
+
 func TestLogFormatterPrintsMediaForwardingFields(t *testing.T) {
 	entry := log.NewEntry(log.New())
 	entry.Time = time.Date(2026, 7, 25, 7, 36, 4, 0, time.Local)

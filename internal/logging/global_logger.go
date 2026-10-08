@@ -34,6 +34,8 @@ type LogFormatter struct{}
 var logFieldOrder = []string{
 	"provider", "model",
 	"sub2api_trace_id",
+	"auth_ref", "attempt", "outcome", "images", "finish_reason", "block_reason",
+	"status", "duration_ms", "cooldown_until",
 	"plugin_id", "plugin_name", "source_id",
 	"version", "active_version", "retired_version", "overwritten",
 	"mode", "budget", "level", "original_mode", "original_value", "min", "max", "clamped_to", "error",
