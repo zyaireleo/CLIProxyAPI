@@ -32,6 +32,7 @@ require (
 	github.com/tidwall/sjson v1.2.5
 	github.com/tiktoken-go/tokenizer v0.8.1
 	golang.org/x/crypto v0.54.0
+	golang.org/x/image v0.43.0
 	golang.org/x/net v0.57.0
 	golang.org/x/oauth2 v0.30.0
 	golang.org/x/sync v0.22.0

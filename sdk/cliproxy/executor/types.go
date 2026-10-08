@@ -272,12 +272,7 @@ type RequestScopedError interface {
 	IsRequestScoped() bool
 }
 
-// NoImageContentError signals that an image-generation model completed a
-// response without producing any image content, which upstreams often report
-// as HTTP 200 with a text-only body when the credential's image quota is
-// exhausted. Executors return it alongside the completed response so auth
-// conductors can rotate to another credential and, when every credential
-// fails the same way, still fall back to the original response.
+// NoImageContentError is a failed image generation, never a successful fallback.
 type NoImageContentError struct {
 	// Model is the base model name that produced the text-only response.
 	Model string
@@ -287,11 +282,9 @@ type NoImageContentError struct {
 }
 
 func (e *NoImageContentError) Error() string {
-	if e == nil {
-		return "image model returned no image content"
-	}
-	return "image model " + e.Model + " returned no image content"
+	return (&ImageFailure{Code: "upstream_empty_image", Message: "Upstream completed without a valid image", Status: 502}).Error()
 }
+func (e *NoImageContentError) StatusCode() int { return 502 }
 
 // RetryAfter exposes the cooldown hint through the same shape used by status
 // errors so conductor cooldown handling picks it up via errors.As.

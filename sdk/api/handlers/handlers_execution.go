@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
@@ -94,18 +95,37 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		return nil, nil, interceptErr
 	}
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
+	ctx = coreexecutor.WithImageGenerationBudget(ctx)
 	resp, err := h.AuthManager.Execute(ctx, providers, req, opts)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		errMsg := executionErrorMessage(err)
+		if attempts := coreexecutor.ImageGenerationAttempts(ctx); attempts > 0 {
+			if errMsg.Addon == nil {
+				errMsg.Addon = make(http.Header)
+			}
+			errMsg.Addon.Set("X-CPA-Gemini-Attempts", strconv.Itoa(attempts))
+		}
 		lifecycle.completeError(ctx, errMsg)
 		return nil, nil, errMsg
+	}
+	if attempts := coreexecutor.ImageGenerationAttempts(ctx); attempts > 0 {
+		if resp.Headers == nil {
+			resp.Headers = make(http.Header)
+		}
+		resp.Headers.Set("X-CPA-Gemini-Attempts", strconv.Itoa(attempts))
 	}
 	executedReq, executedOpts := afterAuthCapture.apply(req, opts)
 	ctx = enrichContextWithSessionHierarchy(ctx, executedOpts.Headers, executedReq.Payload, executedOpts.Metadata)
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), responseProtocol, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	if attempts := coreexecutor.ImageGenerationAttempts(ctx); attempts > 0 {
+		if responseHeaders == nil {
+			responseHeaders = make(http.Header)
+		}
+		responseHeaders.Set("X-CPA-Gemini-Attempts", strconv.Itoa(attempts))
+	}
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }

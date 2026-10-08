@@ -3,6 +3,7 @@ package auth
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -124,6 +125,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
+	ctx = cliproxyexecutor.WithImageGenerationBudget(ctx)
 	if m.HomeEnabled() {
 		resp, errHome := m.executeHome(ctx, normalized, req, opts, false)
 		return resp, unwrapExecutionBoundaryError(errHome)
@@ -148,6 +150,9 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 			preferredUpstreamErr = errExec
 		}
 		lastErr = errExec
+		if cliproxyexecutor.ImageGenerationAttempts(ctx) > 0 || (cliproxyexecutor.FlashImageModel(retryModel) && cliproxyexecutor.ImageOutputRequested(req.Payload)) || isRequestScopedError(errExec) {
+			break
+		}
 		wait, shouldRetry := m.shouldRetryAfterErrorWithAttempted(ctx, opts, errExec, attempt, normalized, retryModel, maxWait, -1, defaultRequestRetry, roundAttempted)
 		if !shouldRetry {
 			break
@@ -164,7 +169,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		}
 		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 		lastErr = unwrapExecutionBoundaryError(lastErr)
-		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
+		if cliproxyexecutor.ImageGenerationAttempts(ctx) == 0 && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
 			if resp, ok, errCredits := m.tryAntigravityCreditsExecute(ctx, req, opts); errCredits != nil {
 				return cliproxyexecutor.Response{}, errCredits
 			} else if ok {
@@ -477,15 +482,27 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	attempted := make(map[string]struct{})
 	var lastErr error
 	var upstreamErr error
-	// lastNoImageResp remembers a completed image-model response that carried no
-	// image content; if every rotated credential fails the same way the original
-	// response is returned so clients keep seeing upstream output instead of an
-	// error synthesized by credential rotation.
-	var lastNoImageResp *cliproxyexecutor.Response
+	var lastSpecificImageErr error
+	var legacyNoImageResp *cliproxyexecutor.Response
+	targetImageEncountered := false
 	for {
+		if errCtx := ctx.Err(); errCtx != nil {
+			return cliproxyexecutor.Response{}, errCtx
+		}
+		if cliproxyexecutor.ImageGenerationAttempts(ctx) >= 4 {
+			if lastSpecificImageErr != nil {
+				return cliproxyexecutor.Response{}, lastSpecificImageErr
+			}
+			if lastErr != nil {
+				return cliproxyexecutor.Response{}, lastErr
+			}
+		}
 		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
-			if lastNoImageResp != nil {
-				return *lastNoImageResp, nil
+			if legacyNoImageResp != nil && !targetImageEncountered {
+				return *legacyNoImageResp, nil
+			}
+			if lastSpecificImageErr != nil {
+				return cliproxyexecutor.Response{}, lastSpecificImageErr
 			}
 			if lastErr != nil {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
@@ -500,8 +517,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
 		if errPick != nil {
-			if lastNoImageResp != nil {
-				return *lastNoImageResp, nil
+			if legacyNoImageResp != nil && !targetImageEncountered {
+				return *legacyNoImageResp, nil
+			}
+			if lastSpecificImageErr != nil {
+				return cliproxyexecutor.Response{}, lastSpecificImageErr
 			}
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
@@ -591,10 +611,22 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					upstreamErr = errExec
 				}
 				if errCtx := execCtx.Err(); errCtx != nil {
+					if cliproxyexecutor.FlashImageModel(execReq.Model) {
+						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationExec, errCtx)
+					}
 					return cliproxyexecutor.Response{}, errCtx
 				}
+				if cliproxyexecutor.FlashImageModel(execReq.Model) && cliproxyexecutor.ImageOutputRequested(payload) {
+					var noImageErr *cliproxyexecutor.NoImageContentError
+					if !errors.As(errExec, &noImageErr) {
+						lastSpecificImageErr = errExec
+					}
+				}
 				refreshCtx := newUpstreamAttemptContext(execCtx)
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
+				if cliproxyexecutor.FlashImageModel(execReq.Model) {
+					warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationExec, errExec)
+				}
+				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh && cliproxyexecutor.ImageGenerationAttempts(ctx) < 4 {
 					auth = refreshed
 					didRefreshOnUnauthorized = true
 					execCtx = newUpstreamAttemptContext(execCtx)
@@ -612,18 +644,26 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 							return cliproxyexecutor.Response{}, errCtx
 						}
 					}
-				} else {
+				} else if !cliproxyexecutor.FlashImageModel(execReq.Model) {
 					warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationExec, errExec)
 				}
 			}
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
 			}
-			if errExec != nil {
+			if cliproxyexecutor.FlashImageModel(execReq.Model) && cliproxyexecutor.ImageOutputRequested(payload) {
+				targetImageEncountered = true
+				if errExec != nil {
+					var noImageErr *cliproxyexecutor.NoImageContentError
+					if !errors.As(errExec, &noImageErr) {
+						lastSpecificImageErr = errExec
+					}
+				}
+			} else if errExec != nil {
 				var noImageErr *cliproxyexecutor.NoImageContentError
 				if errors.As(errExec, &noImageErr) && len(resp.Payload) > 0 {
-					fallbackResp := resp
-					lastNoImageResp = &fallbackResp
+					saved := resp
+					legacyNoImageResp = &saved
 				}
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: execOpts}
@@ -1948,21 +1988,39 @@ func warnLogUpstreamFailure(ctx context.Context, entry *log.Entry, provider, mod
 	if err == nil {
 		return
 	}
-	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
-		return
-	}
-	if errors.Is(err, context.Canceled) {
-		return
-	}
-	if isRequestInvalidError(err) {
-		return
-	}
 	if entry == nil {
 		if ctx != nil {
 			entry = logEntryWithRequestID(ctx)
 		} else {
 			entry = log.NewEntry(log.StandardLogger())
 		}
+	}
+	if provider == "antigravity" && cliproxyexecutor.FlashImageModel(model) {
+		id := ""
+		if auth != nil {
+			id = auth.ID
+		}
+		ref := sha256.Sum256([]byte(id))
+		code := "upstream_error"
+		var noImage *cliproxyexecutor.NoImageContentError
+		var imageFailure *cliproxyexecutor.ImageFailure
+		switch {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			code = "request_cancelled"
+		case errors.As(err, &noImage):
+			code = "upstream_empty_image"
+		case errors.As(err, &imageFailure):
+			code = imageFailure.Code
+		}
+		fields := log.Fields{"auth_ref": fmt.Sprintf("%x", ref[:6]), "model": model, "attempt": cliproxyexecutor.ImageGenerationAttempts(ctx), "outcome": code, "status": statusCodeFromError(err), "duration_ms": duration.Milliseconds(), "sub2api_trace_id": logging.GetSub2APITraceID(ctx)}
+		if delay := retryAfterFromError(err); delay != nil {
+			fields["cooldown_until"] = time.Now().Add(*delay).UTC().Format(time.RFC3339)
+		}
+		entry.WithFields(fields).Warn("antigravity image generation failed")
+		return
+	}
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) || isRequestInvalidError(err) {
+		return
 	}
 	authIdent := formatAuthIdentity(auth, provider)
 	errSummary := safeErrorDiagnosticForLog(err)

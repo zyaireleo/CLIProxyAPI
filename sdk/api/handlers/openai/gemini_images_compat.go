@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	"github.com/tidwall/gjson"
@@ -185,6 +188,9 @@ func parseGeminiImageResponse(payload []byte, responseFormat string) ([]byte, er
 			if mimeType == "" {
 				mimeType = "image/png"
 			}
+			if !helps.ValidInlineImage(mimeType, encoded) {
+				continue
+			}
 			item := map[string]any{}
 			if strings.EqualFold(strings.TrimSpace(responseFormat), "url") {
 				item["url"] = "data:" + mimeType + ";base64," + encoded
@@ -195,7 +201,7 @@ func parseGeminiImageResponse(payload []byte, responseFormat string) ([]byte, er
 		}
 	}
 	if len(data) == 0 {
-		return nil, fmt.Errorf("upstream returned no image output")
+		return nil, &coreexecutor.NoImageContentError{}
 	}
 	output["data"] = data
 	return json.Marshal(output)
@@ -213,16 +219,25 @@ func (h *OpenAIAPIHandler) handleGeminiNativeImages(c *gin.Context, model, promp
 	}
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	defer cliCancel()
-	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
-	defer stopKeepAlive()
+	// Image errors must retain their HTTP status until generation completes.
+	if !coreexecutor.FlashImageModel(model) {
+		stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+		defer stopKeepAlive()
+	}
 	resp, upstreamHeaders, errMsg := h.ExecuteImageWithAuthManager(cliCtx, "gemini", imagesModelBase(model), rawJSON, "")
 	if errMsg != nil {
+		if value := errMsg.Addon.Get("X-CPA-Gemini-Attempts"); value != "" {
+			c.Header("X-CPA-Gemini-Attempts", value)
+		}
 		h.WriteErrorResponse(c, errMsg)
 		return
 	}
 	body, err := parseGeminiImageResponse(resp, responseFormat)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: err.Error(), Type: "upstream_error"}})
+		if value := upstreamHeaders.Get("X-CPA-Gemini-Attempts"); value != "" {
+			c.Header("X-CPA-Gemini-Attempts", value)
+		}
+		c.Data(http.StatusBadGateway, "application/json", handlers.BuildErrorResponseBody(http.StatusBadGateway, err.Error()))
 		return
 	}
 	c.Header("Content-Type", "application/json")

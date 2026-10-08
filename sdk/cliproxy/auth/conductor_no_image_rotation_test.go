@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -97,33 +98,19 @@ func TestExecuteRotatesCredentialOnNoImageContent(t *testing.T) {
 	}
 }
 
-// TestExecuteReturnsOriginalResponseWhenAllCredentialsNoImage verifies the
-// fallback: when every credential answers with text only, the original
-// response is returned instead of a rotation-synthesized error.
-func TestExecuteReturnsOriginalResponseWhenAllCredentialsNoImage(t *testing.T) {
-	manager := newNoImageRotationManager(t, map[string]bool{"noimage-a": true, "noimage-b": true}, "noimage-a", "noimage-b")
-
-	resp, errExecute := manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: "gemini-3.1-flash-image-preview"}, cliproxyexecutor.Options{})
-	if errExecute != nil {
-		t.Fatalf("Execute error = %v, want nil (original response should be returned)", errExecute)
-	}
-	if !strings.Contains(string(resp.Payload), "quota text from") {
-		t.Errorf("payload = %s, want original text-only response", resp.Payload)
-	}
-}
-
-// TestExecuteReturnsOriginalResponseWhenSingleCredentialNoImage mirrors the
-// production incident shape: only one credential exists, it answers text-only,
-// and the client must still receive that response.
-func TestExecuteReturnsOriginalResponseWhenSingleCredentialNoImage(t *testing.T) {
-	manager := newNoImageRotationManager(t, map[string]bool{"noimage-a": true}, "noimage-a")
-
-	resp, errExecute := manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: "gemini-3.1-flash-image-preview"}, cliproxyexecutor.Options{})
-	if errExecute != nil {
-		t.Fatalf("Execute error = %v, want nil (original response should be returned)", errExecute)
-	}
-	if !strings.Contains(string(resp.Payload), "quota text from noimage-a") {
-		t.Errorf("payload = %s, want original text-only response", resp.Payload)
+// Exhaustion must be an error for both credential-limit and selection-limit exits.
+func TestExecuteReturnsFailureWhenAllCredentialsNoImage(t *testing.T) {
+	for _, count := range []int{1, 2} {
+		ids := []string{"noimage-a"}
+		if count == 2 {
+			ids = append(ids, "noimage-b")
+		}
+		manager := newNoImageRotationManager(t, map[string]bool{"noimage-a": true, "noimage-b": true}, ids...)
+		resp, err := manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: "gemini-3.1-flash-image-preview"}, cliproxyexecutor.Options{})
+		var empty *cliproxyexecutor.NoImageContentError
+		if !errors.As(err, &empty) || len(resp.Payload) != 0 {
+			t.Fatalf("response=%s err=%v", resp.Payload, err)
+		}
 	}
 }
 

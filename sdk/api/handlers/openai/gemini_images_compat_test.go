@@ -1,6 +1,11 @@
 package openai
 
 import (
+	"bytes"
+	"encoding/base64"
+	"image"
+	"image/png"
+	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -54,17 +59,22 @@ func TestBuildGeminiImageRequestRejectsInvalidImageData(t *testing.T) {
 }
 
 func TestParseGeminiImageResponse(t *testing.T) {
-	payload := []byte(`{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"AA=="}}]}}]}`)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(buf.Bytes())
+	payload := []byte(strings.ReplaceAll(`{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"AA=="}}]}}]}`, "AA==", encoded))
 	for _, format := range []string{"", "b64_json", "url"} {
 		resp, err := parseGeminiImageResponse(payload, format)
 		if err != nil {
 			t.Fatalf("format %q: %v", format, err)
 		}
 		if format == "url" {
-			if got := gjson.GetBytes(resp, "data.0.url").String(); got != "data:image/png;base64,AA==" {
+			if got := gjson.GetBytes(resp, "data.0.url").String(); got != "data:image/png;base64,"+encoded {
 				t.Fatalf("url = %q", got)
 			}
-		} else if got := gjson.GetBytes(resp, "data.0.b64_json").String(); got != "AA==" {
+		} else if got := gjson.GetBytes(resp, "data.0.b64_json").String(); got != encoded {
 			t.Fatalf("b64_json = %q", got)
 		}
 	}

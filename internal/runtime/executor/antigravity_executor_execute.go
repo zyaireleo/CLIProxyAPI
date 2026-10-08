@@ -130,6 +130,11 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		return resp, err
 	}
 
+	if cliproxyexecutor.FlashImageModel(baseModel) && !antigravityImageOutputDisabled(originalPayload) {
+		if errBudget := cliproxyexecutor.ConsumeImageGeneration(ctx); errBudget != nil {
+			return resp, errBudget
+		}
+	}
 	httpResp, errDo := httpClient.Do(httpReq)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
@@ -137,6 +142,9 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 			return resp, errDo
 		}
 		err = errDo
+		if cliproxyexecutor.FlashImageModel(baseModel) {
+			err = &cliproxyexecutor.ImageFailure{Code: "upstream_connection_error", Message: "Upstream image generation connection failed", Status: http.StatusBadGateway}
+		}
 		return resp, err
 	}
 
@@ -179,8 +187,12 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 			// Report the upstream failure rather than the cleanup failure.
 			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
 		}
-		err = newAntigravityStatusErr(httpResp.StatusCode, bodyBytes)
+		err = antigravityImageStatusError(baseModel, httpResp.StatusCode, bodyBytes)
 		return resp, err
+	}
+
+	if errImage := validateFlashImageOutput(ctx, auth, baseModel, originalPayload, helps.InspectImageResponse(bodyBytes)); errImage != nil {
+		return resp, errImage
 	}
 
 	// Success
@@ -341,6 +353,11 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		return resp, err
 	}
 
+	if cliproxyexecutor.FlashImageModel(baseModel) && !antigravityImageOutputDisabled(originalPayload) {
+		if errBudget := cliproxyexecutor.ConsumeImageGeneration(ctx); errBudget != nil {
+			return resp, errBudget
+		}
+	}
 	httpResp, errDo := httpClient.Do(httpReq)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
@@ -348,6 +365,9 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 			return resp, errDo
 		}
 		err = errDo
+		if cliproxyexecutor.FlashImageModel(baseModel) {
+			err = &cliproxyexecutor.ImageFailure{Code: "upstream_connection_error", Message: "Upstream image generation connection failed", Status: http.StatusBadGateway}
+		}
 		return resp, err
 	}
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
@@ -396,7 +416,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 			// Report the upstream failure rather than the cleanup failure.
 			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
 		}
-		err = newAntigravityStatusErr(httpResp.StatusCode, bodyBytes)
+		err = antigravityImageStatusError(baseModel, httpResp.StatusCode, bodyBytes)
 		return resp, err
 	}
 
@@ -432,33 +452,55 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 			}
 			reporter.ObserveResponseModel(payload)
 
-			if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
+			if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok && !cliproxyexecutor.FlashImageModel(baseModel) {
 				reporter.Publish(ctx, detail)
 			}
 
-			out <- cliproxyexecutor.StreamChunk{Payload: payload}
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Payload: payload}:
+			case <-ctx.Done():
+				return
+			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case <-ctx.Done():
+			}
 		} else {
 			if replayAccumulator != nil {
 				replayAccumulator.Commit(ctx)
 			}
-			reporter.EnsurePublished(ctx)
+			if !cliproxyexecutor.FlashImageModel(baseModel) {
+				reporter.EnsurePublished(ctx)
+			}
 		}
 	}(httpResp)
 
 	var buffer bytes.Buffer
+	var imageSummary helps.ImageResponseSummary
 	for chunk := range out {
 		if chunk.Err != nil {
 			return resp, chunk.Err
 		}
 		if len(chunk.Payload) > 0 {
+			partSummary := helps.InspectImageResponse(chunk.Payload)
+			imageSummary.Images += partSummary.Images
+			imageSummary.Text = imageSummary.Text || partSummary.Text
+			if partSummary.Block != "" {
+				imageSummary.Block = partSummary.Block
+			}
+			if partSummary.Finish != "" && (imageSummary.Finish == "" || partSummary.Finish != "STOP") {
+				imageSummary.Finish = partSummary.Finish
+			}
 			_, _ = buffer.Write(chunk.Payload)
 			_, _ = buffer.Write([]byte("\n"))
 		}
+	}
+	if errImage := validateFlashImageOutput(ctx, auth, baseModel, originalPayload, imageSummary); errImage != nil {
+		return resp, errImage
 	}
 	resp = cliproxyexecutor.Response{Payload: e.convertStreamToNonStream(buffer.Bytes())}
 
