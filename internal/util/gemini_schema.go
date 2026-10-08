@@ -51,6 +51,16 @@ func CleanJSONSchemaForAntigravity(jsonStr string) string {
 // type of generated function arguments, so numeric and boolean types must not be rewritten.
 // requirePlaceholder is used only for Claude VALIDATED mode.
 func CleanJSONSchemaForAntigravityTool(jsonStr string, requirePlaceholder bool) string {
+	return cleanAntigravityToolSchema(removeAntigravityToolScope(jsonStr), requirePlaceholder)
+}
+
+// CleanJSONSchemaForAntigravityFunctionResponse preserves the existing declaration
+// result policy without applying parameter-only metadata cleanup.
+func CleanJSONSchemaForAntigravityFunctionResponse(jsonStr string, requirePlaceholder bool) string {
+	return cleanAntigravityToolSchema(jsonStr, requirePlaceholder)
+}
+
+func cleanAntigravityToolSchema(jsonStr string, requirePlaceholder bool) string {
 	return cleanJSONSchema(jsonStr, jsonSchemaCleanOptions{
 		addPlaceholder:       requirePlaceholder,
 		addMissingArrayItems: true,

@@ -211,11 +211,19 @@ func sanitizeAntigravityToolSchemaDocument(payloadStr string, useAntigravitySche
 	cleanNestedToolSchema := func(schemaRaw string) string {
 		return cleanNestedSchema(toolSchemaCleaner, schemaRaw)
 	}
-	return cleanAntigravitySchemasAtPaths(
-		payloadStr,
-		antigravityDeclarationSchemaPaths(payloadStr),
-		cleanNestedToolSchema,
-	)
+	cleanNestedResultSchema := func(schemaRaw string) string {
+		return cleanNestedSchema(func(schema string) string {
+			return util.CleanJSONSchemaForAntigravityFunctionResponse(schema, useAntigravitySchema)
+		}, schemaRaw)
+	}
+	for _, path := range antigravityDeclarationSchemaPaths(payloadStr) {
+		clean := cleanNestedToolSchema
+		if strings.HasSuffix(path, ".response") || strings.HasSuffix(path, ".responseJsonSchema") || strings.HasSuffix(path, ".response_json_schema") {
+			clean = cleanNestedResultSchema
+		}
+		payloadStr = cleanAntigravitySchemasAtPaths(payloadStr, []string{path}, clean)
+	}
+	return payloadStr
 }
 
 // sanitizeAntigravityGenerationSchemas batches every schema edit within one
