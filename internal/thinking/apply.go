@@ -2,6 +2,7 @@
 package thinking
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 
@@ -194,6 +195,20 @@ func ApplyThinkingWithModelInfoAndSummary(body, sourceBody []byte, model string,
 }
 
 func applyThinking(body, sourceBody []byte, model string, fromFormat string, toFormat string, providerKey string, resolvedModelInfo *registry.ModelInfo, modelInfoResolved bool, summaryConfig SummaryConfig) ([]byte, error) {
+	// TEMP DEBUG (S-12): remove after production diagnosis
+	if toFormat == "antigravity" || toFormat == "gemini" {
+		mi := resolvedModelInfo
+		lv := "nil"
+		mn := -1
+		if mi != nil && mi.Thinking != nil {
+			lv = fmt.Sprintf("%v", mi.Thinking.Levels)
+			mn = mi.Thinking.Min
+		}
+		bb, _ := outputBudgetOf(body, toFormat)
+		sb, _ := outputBudgetOf(sourceBody, fromFormat)
+		log.WithFields(log.Fields{"model": model, "from": fromFormat, "to": toFormat, "resolved": modelInfoResolved, "min": mn, "levels": lv, "body_budget": bb, "src_budget": sb}).Info("TEMP s12 guard inputs |")
+	}
+	// END TEMP DEBUG
 	providerFormat := strings.ToLower(strings.TrimSpace(toFormat))
 	if providerFormat == "openai-response" {
 		providerFormat = "codex"
