@@ -280,22 +280,32 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 	}
 
 	if !hasThinkingConfig(config) {
-		log.WithFields(log.Fields{
-			"provider": providerFormat,
-			"model":    modelInfo.ID,
-		}).Debug("thinking: no config found, passthrough |")
-		if modelInfoResolved && providerFormat == "claude" && fromFormat != providerFormat && ExtractSummaryConfig(sourceBody, fromFormat).Mode == SummaryEnabled {
-			// Registry translation can only see aggregate model capabilities. For a
-			// cross-protocol summary-only request it may have activated adaptive
-			// thinking solely to make display valid. The selected API-key model is
-			// authoritative at execution time, so discard that inferred activation
-			// when the exact model supports only manual extended thinking. Use the
-			// source intent here even if a target normalizer removed display; in that
-			// case the inferred amount must disappear with it. Explicit native Claude
-			// thinking never reaches this cross-protocol branch.
-			body = stripInferredClaudeSummaryActivation(body, modelInfo)
+		if guardConfig, guardBudget := outputBudgetGuard(body, sourceBody, fromFormat, providerFormat, modelInfo); hasThinkingConfig(guardConfig) {
+			log.WithFields(log.Fields{
+				"provider":        providerFormat,
+				"model":           modelInfo.ID,
+				"output_budget":   guardBudget,
+				"guard_threshold": smallOutputBudgetThreshold,
+			}).Info("thinking: small output budget, suppressing thinking |")
+			config = guardConfig
+		} else {
+			log.WithFields(log.Fields{
+				"provider": providerFormat,
+				"model":    modelInfo.ID,
+			}).Debug("thinking: no config found, passthrough |")
+			if modelInfoResolved && providerFormat == "claude" && fromFormat != providerFormat && ExtractSummaryConfig(sourceBody, fromFormat).Mode == SummaryEnabled {
+				// Registry translation can only see aggregate model capabilities. For a
+				// cross-protocol summary-only request it may have activated adaptive
+				// thinking solely to make display valid. The selected API-key model is
+				// authoritative at execution time, so discard that inferred activation
+				// when the exact model supports only manual extended thinking. Use the
+				// source intent here even if a target normalizer removed display; in that
+				// case the inferred amount must disappear with it. Explicit native Claude
+				// thinking never reaches this cross-protocol branch.
+				body = stripInferredClaudeSummaryActivation(body, modelInfo)
+			}
+			return applySummaryConfigForProvider(body, providerFormat, baseModel, providerKey, modelInfo, summaryConfig), nil
 		}
-		return applySummaryConfigForProvider(body, providerFormat, baseModel, providerKey, modelInfo, summaryConfig), nil
 	}
 	if modelInfoResolved && config.Mode == ModeLevel && modelInfo != nil && modelInfo.Thinking != nil && shouldMapConfiguredHighIntent(fromFormat, providerFormat, modelInfo) {
 		config.Level = mapConfiguredHighIntent(config.Level, modelInfo)
@@ -914,4 +924,70 @@ func extractCodexUsageConfig(body []byte) ThinkingConfig {
 	}
 
 	return extractCodexConfig(body)
+}
+
+// smallOutputBudgetThreshold is the inclusive output-budget ceiling below which the
+// probe guard suppresses thinking. Real-world trigger: platform health probes send
+// max_tokens=16; thinking burns the entire budget before any answer text is
+// produced, upstream returns MAX_TOKENS without a final answer and the caller
+// marks the model as unreachable (api-router-ops S-12, 2026-10-08).
+const smallOutputBudgetThreshold = 1024
+
+// outputBudgetGuard returns a minimal-thinking fallback for requests whose output
+// budget is tiny and which carry no explicit thinking configuration. It applies
+// only to gemini/antigravity targets on thinking-capable models whose level set
+// contains "minimal" (the pipeline cannot express a true zero-thinking budget for
+// level-bearing models, so models without "minimal" are left untouched).
+// Explicit body config and model-name suffixes always win: this helper is only
+// consulted from the no-config branch of applyThinking.
+// Returns the guard config (empty when not applicable) and the detected budget
+// (0 when absent) for logging.
+func outputBudgetGuard(body, sourceBody []byte, fromFormat, toFormat string, modelInfo *registry.ModelInfo) (ThinkingConfig, int) {
+	if toFormat != "gemini" && toFormat != "antigravity" {
+		return ThinkingConfig{}, 0
+	}
+	if modelInfo == nil || modelInfo.Thinking == nil {
+		return ThinkingConfig{}, 0
+	}
+	budget, ok := outputBudgetOf(body, toFormat)
+	if !ok {
+		budget, ok = outputBudgetOf(sourceBody, fromFormat)
+	}
+	if !ok || budget <= 0 || budget > smallOutputBudgetThreshold {
+		return ThinkingConfig{}, budget
+	}
+	if !isLevelSupported(string(LevelMinimal), modelInfo.Thinking.Levels) {
+		return ThinkingConfig{}, budget
+	}
+	return ThinkingConfig{Mode: ModeLevel, Level: LevelMinimal}, budget
+}
+
+// outputBudgetOf reads the caller-declared output budget from a request body of
+// the given format. Returns ok=false when the format is unknown or no positive
+// budget field exists.
+func outputBudgetOf(body []byte, format string) (int, bool) {
+	if len(body) == 0 {
+		return 0, false
+	}
+	var paths []string
+	switch format {
+	case "gemini":
+		paths = []string{"generationConfig.maxOutputTokens"}
+	case "antigravity":
+		paths = []string{"request.generationConfig.maxOutputTokens"}
+	case "openai":
+		paths = []string{"max_completion_tokens", "max_tokens"}
+	case "openai-response", "codex":
+		paths = []string{"max_output_tokens"}
+	case "claude":
+		paths = []string{"max_tokens"}
+	default:
+		return 0, false
+	}
+	for _, p := range paths {
+		if v := gjson.GetBytes(body, p); v.Exists() && v.Int() > 0 {
+			return int(v.Int()), true
+		}
+	}
+	return 0, false
 }

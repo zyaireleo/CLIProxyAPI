@@ -3560,6 +3560,7 @@
         "max": 65535,
         "dynamic_allowed": true,
         "levels": [
+          "minimal",
           "low",
           "medium",
           "high"
@@ -3590,6 +3591,7 @@
         "max": 65535,
         "dynamic_allowed": true,
         "levels": [
+          "minimal",
           "low",
           "medium",
           "high"
