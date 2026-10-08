@@ -372,9 +372,32 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 	}
 
 	if model == "" {
+		// A config reload may race with a newer live credential cooldown. Keep
+		// its later deadline, without promoting model aggregates to global gates.
+		nextRetry := record.NextRetryAfter
+		if len(auth.ModelStates) == 0 || auth.Quota.Reason == "credential_quota" {
+			if auth.NextRetryAfter.After(nextRetry) {
+				nextRetry = auth.NextRetryAfter
+			}
+			if auth.Quota.NextRecoverAt.After(quota.NextRecoverAt) {
+				quota.NextRecoverAt = auth.Quota.NextRecoverAt
+			}
+			if auth.Quota.BackoffLevel > quota.BackoffLevel {
+				quota.BackoffLevel = auth.Quota.BackoffLevel
+			}
+			if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
+				quota.Exceeded, quota.Reason = true, "credential_quota"
+			}
+			if auth.UpdatedAt.After(updatedAt) {
+				updatedAt = auth.UpdatedAt
+				if auth.LastError != nil {
+					record.LastError = auth.LastError
+				}
+			}
+		}
 		auth.Unavailable = true
 		auth.Status = StatusError
-		auth.NextRetryAfter = record.NextRetryAfter
+		auth.NextRetryAfter = nextRetry
 		applyCooldownFields(&auth.Quota, quota)
 		auth.Quota = mergeQuotaObservation(auth.Quota, quota)
 		auth.Generation++

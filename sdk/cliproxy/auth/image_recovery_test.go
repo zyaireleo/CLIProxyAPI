@@ -137,3 +137,61 @@ func TestImageRecoveryLeaseAndLateSuccess(t *testing.T) {
 		releaseAgain()
 	}
 }
+
+func TestRestoreCooldownRetainsNewerLiveDeadlines(t *testing.T) {
+	now := time.Now().UTC()
+	short, long := now.Add(time.Hour), now.Add(4*time.Hour)
+	for _, scope := range []string{"model", "credential"} {
+		t.Run(scope, func(t *testing.T) {
+			model := "gemini-3.1-flash-image"
+			live := &Auth{ID: "restore-live", Provider: "antigravity", Unavailable: true, Status: StatusError, UpdatedAt: now.Add(time.Minute)}
+			if scope == "model" {
+				live.ModelStates = map[string]*ModelState{model: {Unavailable: true, Status: StatusError, NextRetryAfter: long, Quota: QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: long}, UpdatedAt: live.UpdatedAt}}
+			} else {
+				model = ""
+				live.NextRetryAfter = long
+				live.Quota = QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: long, BackoffLevel: 5}
+			}
+			m := NewManager(nil, nil, nil)
+			if _, err := m.Register(WithSkipPersist(context.Background()), live); err != nil {
+				t.Fatal(err)
+			}
+			reason := "quota"
+			if scope == "credential" {
+				reason = "credential_quota"
+			}
+			m.SetCooldownStateStore(&recordingCooldownStateStore{load: []CooldownStateRecord{{AuthID: live.ID, Provider: live.Provider, Model: model, NextRetryAfter: short, Quota: QuotaState{Exceeded: true, Reason: reason, NextRecoverAt: short}, UpdatedAt: now}}})
+			if err := m.RestoreCooldownStates(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := m.GetByID(live.ID)
+			if scope == "model" {
+				if !got.ModelStates[model].NextRetryAfter.Equal(long) || !got.ModelStates[model].Quota.NextRecoverAt.Equal(long) {
+					t.Fatal("model cooldown shortened during restore")
+				}
+			} else if !got.NextRetryAfter.Equal(long) || !got.Quota.NextRecoverAt.Equal(long) || got.Quota.Reason != "credential_quota" || got.Quota.BackoffLevel != 5 {
+				t.Fatal("credential cooldown shortened during restore")
+			}
+		})
+	}
+}
+
+func TestRestoreCredentialCooldownDoesNotPromoteModelAggregate(t *testing.T) {
+	now := time.Now().UTC()
+	credential, modelDeadline := now.Add(time.Hour), now.Add(4*time.Hour)
+	live := &Auth{ID: "restore-aggregate", Provider: "antigravity", NextRetryAfter: modelDeadline,
+		Quota:       QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: modelDeadline},
+		ModelStates: map[string]*ModelState{"another-model": {Unavailable: true, NextRetryAfter: modelDeadline}}}
+	m := NewManager(nil, nil, nil)
+	if _, err := m.Register(WithSkipPersist(context.Background()), live); err != nil {
+		t.Fatal(err)
+	}
+	m.SetCooldownStateStore(&recordingCooldownStateStore{load: []CooldownStateRecord{{AuthID: live.ID, Provider: live.Provider, NextRetryAfter: credential, Quota: QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: credential}}}})
+	if err := m.RestoreCooldownStates(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := m.GetByID(live.ID)
+	if !got.NextRetryAfter.Equal(credential) || !got.Quota.NextRecoverAt.Equal(credential) || !got.ModelStates["another-model"].NextRetryAfter.Equal(modelDeadline) {
+		t.Fatal("model cooldown was promoted to a longer global gate")
+	}
+}
