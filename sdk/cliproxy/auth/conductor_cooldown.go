@@ -792,7 +792,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			} else if modelKey != "" {
 				state := ensureModelState(auth, modelKey)
 				modelState = state
-				resetModelState(state, now)
+				// A late successful request must not release a newer image quota deadline.
+				if !(auth.Provider == "antigravity" && cliproxyexecutor.FlashImageModel(modelKey) && state.NextRetryAfter.After(now)) {
+					resetModelState(state, now)
+				}
 				updateAggregatedAvailability(auth, now)
 				if !hasModelError(auth, now) {
 					auth.LastError = nil

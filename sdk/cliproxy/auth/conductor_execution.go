@@ -602,6 +602,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, upstreamModel)
 			}
 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
+			releaseRecovery, canRecover := m.claimImageRecovery(auth, resultModel)
+			if !canRecover {
+				authErr = &Error{Code: "upstream_image_recovering", Message: "Image model is cooling down or testing recovery", HTTPStatus: 503}
+				continue
+			}
+			defer releaseRecovery()
 			startExec := time.Now()
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
