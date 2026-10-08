@@ -375,11 +375,10 @@ func (s *Service) waitAntigravityProbesContext(ctx context.Context) {
 	if s == nil || ctx == nil {
 		return
 	}
-	done := make(chan struct{})
-	go func() {
-		s.antigravityProbeWg.Wait()
-		close(done)
-	}()
+	done := s.antigravityProbeWg.doneChannel()
+	if done == nil {
+		return
+	}
 	select {
 	case <-ctx.Done():
 	case <-done:
