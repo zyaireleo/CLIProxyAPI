@@ -484,11 +484,21 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 	}
 
 	if !hasThinkingConfig(config) {
-		log.WithFields(log.Fields{
-			"model":    modelID,
-			"provider": toFormat,
-		}).Debug("thinking: user-defined model, passthrough (no config) |")
-		return applySummaryConfigForProvider(body, toFormat, modelID, providerKey, modelInfo, summaryConfig), nil
+		if guardConfig, guardBudget := outputBudgetGuard(body, nil, fromFormat, toFormat, modelInfo); hasThinkingConfig(guardConfig) {
+			log.WithFields(log.Fields{
+				"provider":        toFormat,
+				"model":           modelID,
+				"output_budget":   guardBudget,
+				"guard_threshold": smallOutputBudgetThreshold,
+			}).Info("thinking: small output budget, suppressing thinking |")
+			config = guardConfig
+		} else {
+			log.WithFields(log.Fields{
+				"model":    modelID,
+				"provider": toFormat,
+			}).Debug("thinking: user-defined model, passthrough (no config) |")
+			return applySummaryConfigForProvider(body, toFormat, modelID, providerKey, modelInfo, summaryConfig), nil
+		}
 	}
 
 	applier := GetProviderApplier(toFormat)
@@ -956,10 +966,16 @@ func outputBudgetGuard(body, sourceBody []byte, fromFormat, toFormat string, mod
 	if !ok || budget <= 0 || budget > smallOutputBudgetThreshold {
 		return ThinkingConfig{}, budget
 	}
-	if !isLevelSupported(string(LevelMinimal), modelInfo.Thinking.Levels) {
+	// Suppression form: thinkingBudget=1 — the only form that survives BOTH paths
+	// untouched: registered path (Min==1 passes strict validation without
+	// ZeroAllowed) and user-defined path (normalizeUserDefinedConfig only rewrites
+	// ModeLevel, ModeBudget passes as-is). Upstream-accepted on Gemini 3.x with
+	// effectively zero thinking (S-12 probe evidence, 2026-10-08: budget 1 → 200,
+	// zero thought tokens, final answer within a 16-token budget).
+	if modelInfo.Thinking.Min != 1 {
 		return ThinkingConfig{}, budget
 	}
-	return ThinkingConfig{Mode: ModeLevel, Level: LevelMinimal}, budget
+	return ThinkingConfig{Mode: ModeBudget, Budget: 1}, budget
 }
 
 // outputBudgetOf reads the caller-declared output budget from a request body of

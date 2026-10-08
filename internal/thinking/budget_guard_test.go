@@ -35,9 +35,9 @@ func TestBudgetGuardFiresAntigravity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyThinking error: %v", err)
 	}
-	got := gjson.GetBytes(out, "request.generationConfig.thinkingConfig.thinkingLevel").String()
-	if got != "minimal" {
-		t.Fatalf("want thinkingLevel=minimal, got=%q body=%s", got, out)
+	got := gjson.GetBytes(out, "request.generationConfig.thinkingConfig.thinkingBudget").Int()
+	if got != 1 {
+		t.Fatalf("want thinkingBudget=1, got=%v body=%s", got, out)
 	}
 }
 
@@ -48,9 +48,9 @@ func TestBudgetGuardFiresGemini(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyThinking error: %v", err)
 	}
-	got := gjson.GetBytes(out, "generationConfig.thinkingConfig.thinkingLevel").String()
-	if got != "minimal" {
-		t.Fatalf("want thinkingLevel=minimal, got=%q body=%s", got, out)
+	got := gjson.GetBytes(out, "generationConfig.thinkingConfig.thinkingBudget").Int()
+	if got != 1 {
+		t.Fatalf("want thinkingBudget=1, got=%v body=%s", got, out)
 	}
 }
 
@@ -128,17 +128,56 @@ func TestBudgetGuardSkipsNonThinkingModel(t *testing.T) {
 	}
 }
 
-func TestBudgetGuardSkipsModelWithoutMinimalLevel(t *testing.T) {
-	// e.g. gemini-pro-agent: levels [low,medium,high]; the pipeline cannot express
-	// a true zero-thinking budget for level models, so the guard must no-op.
+func TestBudgetGuardBudget1FallbackForNoMinimal(t *testing.T) {
+	// e.g. gemini-pro-agent: levels [low,medium,high], min=1; the pipeline cannot
+	// express zero thinking for level models, but budget=1 is valid (Min==1) and
+	// upstream-accepted — effectively no thinking.
 	body := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":16}}}`)
 	out, err := thinking.ApplyThinkingWithModelInfo(body, nil, "gemini-pro-agent", "gemini", "antigravity", "antigravity",
 		budgetGuardModelInfo([]string{"low", "medium", "high"}))
 	if err != nil {
 		t.Fatalf("ApplyThinking error: %v", err)
 	}
+	got := gjson.GetBytes(out, "request.generationConfig.thinkingConfig.thinkingBudget").Int()
+	if got != 1 {
+		t.Fatalf("want thinkingBudget=1 fallback, got=%v body=%s", got, out)
+	}
+}
+
+func TestBudgetGuardSkipsHighMinModel(t *testing.T) {
+	// min>1 (e.g. 2.5-pro min=128): budget=min would still exceed a 16-token
+	// output budget, and smaller budgets are invalid — guard must no-op.
+	body := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":16}}}`)
+	info := &registry.ModelInfo{
+		ID: "gemini-2.5-pro",
+		Thinking: &registry.ThinkingSupport{
+			Min:    128,
+			Max:    32768,
+			Levels: []string{"low", "medium", "high"},
+		},
+	}
+	out, err := thinking.ApplyThinkingWithModelInfo(body, nil, "gemini-2.5-pro", "gemini", "antigravity", "antigravity", info)
+	if err != nil {
+		t.Fatalf("ApplyThinking error: %v", err)
+	}
 	if gjson.GetBytes(out, "request.generationConfig.thinkingConfig").Exists() {
-		t.Fatalf("guard must not inject a level the model does not support: %s", out)
+		t.Fatalf("guard must not fire when no valid suppression exists: %s", out)
+	}
+}
+
+func TestBudgetGuardFiresUserDefinedPath(t *testing.T) {
+	// Production: config alias fork:true registers these models as UserDefined,
+	// routing them through applyUserDefinedModel — the guard must fire there too.
+	body := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":16}}}`)
+	info := budgetGuardModelInfo([]string{"minimal", "low", "medium", "high"})
+	info.UserDefined = true
+	out, err := thinking.ApplyThinkingWithModelInfo(body, nil, "gemini-3.6-flash", "gemini", "antigravity", "antigravity", info)
+	if err != nil {
+		t.Fatalf("ApplyThinking error: %v", err)
+	}
+	got := gjson.GetBytes(out, "request.generationConfig.thinkingConfig.thinkingBudget").Int()
+	if got != 1 {
+		t.Fatalf("user-defined path must honor the guard, want budget=1 got=%v body=%s", got, out)
 	}
 }
 
@@ -150,9 +189,9 @@ func TestBudgetGuardReadsSourceBodyBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyThinking error: %v", err)
 	}
-	got := gjson.GetBytes(out, "request.generationConfig.thinkingConfig.thinkingLevel").String()
-	if got != "minimal" {
-		t.Fatalf("guard must read source openai max_tokens, want minimal got=%q body=%s", got, out)
+	got := gjson.GetBytes(out, "request.generationConfig.thinkingConfig.thinkingBudget").Int()
+	if got != 1 {
+		t.Fatalf("guard must read source openai max_tokens, want budget=1 got=%v body=%s", got, out)
 	}
 }
 
@@ -165,7 +204,7 @@ func TestBudgetGuardBoundary1024(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ApplyThinking error: %v", err)
 		}
-		return gjson.GetBytes(out, "request.generationConfig.thinkingConfig.thinkingLevel").String() == "minimal"
+		return gjson.GetBytes(out, "request.generationConfig.thinkingConfig.thinkingBudget").Int() == 1
 	}
 	if !fire(1024) {
 		t.Fatal("budget=1024 must trigger the guard (threshold is inclusive)")
