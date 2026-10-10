@@ -974,6 +974,12 @@ func PayloadRequestPath(opts cliproxyexecutor.Options) string {
 	}
 }
 
+// MatchModelPattern exposes the payload-rule model wildcard matching ("*" only) for
+// other feature configs that share the same matching semantics (e.g. rate-limit rules).
+func MatchModelPattern(pattern, model string) bool {
+	return matchModelPattern(pattern, model)
+}
+
 // matchModelPattern performs simple wildcard matching where '*' matches zero or more characters.
 // Examples:
 //

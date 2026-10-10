@@ -161,6 +161,9 @@ type AntigravityConfig struct {
 
 	// ConnectionPool configures upstream HTTP connection pooling behavior for Antigravity.
 	ConnectionPool AntigravityConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
+
+	// RateLimit configures per-(auth, model) adaptive AIMD token-bucket pacing.
+	RateLimit AntigravityRateLimitConfig `yaml:"rate-limit,omitempty" json:"rate-limit,omitempty"`
 }
 
 // AntigravityConnectionPoolConfig controls upstream HTTP/1.1 connection pooling behavior for Antigravity.

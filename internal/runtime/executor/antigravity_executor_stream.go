@@ -55,6 +55,9 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			return nil, statusErr{code: http.StatusTooManyRequests, msg: fmt.Sprintf("auth in short cooldown, %s remaining", remaining), retryAfter: &d}
 		}
 	}
+	if errAcquire := e.antigravityPreflightAcquire(ctx, auth, baseModel); errAcquire != nil {
+		return nil, errAcquire
+	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
@@ -160,6 +163,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		helps.AppendAPIResponseChunk(ctx, e.cfg, bodyBytes)
 		if httpResp.StatusCode == http.StatusTooManyRequests {
 			decision := decideAntigravity429(bodyBytes)
+			antigravityRecordUpstream429(ctx, e.cfg, auth, baseModel, decision)
 
 			switch decision.kind {
 			case antigravity429DecisionShortCooldownSwitchAuth:
@@ -192,6 +196,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	if useCredits {
 		clearAntigravityCreditsFailureState(auth)
 	}
+	antigravityRecordSuccess(ctx, e.cfg, auth, baseModel)
 	replayAccumulator := newAntigravityReasoningReplayAccumulator(replayScope, requestPayload)
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func(resp *http.Response) {

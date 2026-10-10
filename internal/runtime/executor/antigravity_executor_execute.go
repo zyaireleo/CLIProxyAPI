@@ -52,6 +52,9 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 			return resp, statusErr{code: http.StatusTooManyRequests, msg: fmt.Sprintf("auth in short cooldown, %s remaining", remaining), retryAfter: &d}
 		}
 	}
+	if errAcquire := e.antigravityPreflightAcquire(ctx, auth, baseModel); errAcquire != nil {
+		return resp, errAcquire
+	}
 
 	isClaude := strings.Contains(strings.ToLower(baseModel), "claude")
 	if isClaude || strings.Contains(baseModel, "gemini-3-pro") || strings.Contains(baseModel, "gemini-3.1-flash-image") {
@@ -162,6 +165,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 
 	if httpResp.StatusCode == http.StatusTooManyRequests {
 		decision := decideAntigravity429(bodyBytes)
+		antigravityRecordUpstream429(ctx, e.cfg, auth, baseModel, decision)
 		switch decision.kind {
 		case antigravity429DecisionShortCooldownSwitchAuth:
 			closeAntigravityAuthIdleTransports(auth)
@@ -199,6 +203,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	if useCredits {
 		clearAntigravityCreditsFailureState(auth)
 	}
+	antigravityRecordSuccess(ctx, e.cfg, auth, baseModel)
 	cacheAntigravityReasoningReplayFromResponse(ctx, replayScope, requestPayload, bodyBytes)
 	bodyBytes = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, bodyBytes)
 	reporter.ObserveResponseModel(bodyBytes)
@@ -280,7 +285,6 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 			return resp, statusErr{code: http.StatusTooManyRequests, msg: fmt.Sprintf("auth in short cooldown, %s remaining", remaining), retryAfter: &d}
 		}
 	}
-
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
@@ -392,6 +396,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		helps.AppendAPIResponseChunk(ctx, e.cfg, bodyBytes)
 		if httpResp.StatusCode == http.StatusTooManyRequests {
 			decision := decideAntigravity429(bodyBytes)
+			antigravityRecordUpstream429(ctx, e.cfg, auth, baseModel, decision)
 
 			switch decision.kind {
 			case antigravity429DecisionShortCooldownSwitchAuth:
@@ -424,6 +429,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	if useCredits {
 		clearAntigravityCreditsFailureState(auth)
 	}
+	antigravityRecordSuccess(ctx, e.cfg, auth, baseModel)
 	replayAccumulator := newAntigravityReasoningReplayAccumulator(replayScope, requestPayload)
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func(resp *http.Response) {

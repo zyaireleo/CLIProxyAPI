@@ -385,6 +385,21 @@ codex:
 #     enabled: false             # whether to enable connection pooling (default: false; set to true to enable connection pooling)
 #     idle-conn-timeout: "30s"   # idle keep-alive timeout (default: 30s, capped at 210s)
 #     max-idle-conns-per-host: 2 # max idle connections per host per credential (default: 2)
+#   rate-limit:                  # optional: per-(auth, model) adaptive AIMD token-bucket pacing (default: disabled)
+#     enabled: false             # master switch; when false this whole block is a no-op
+#     initial-rpm-per-auth: 10   # seed rate in requests/minute per auth per model
+#     min-rpm-per-auth: 1        # adaptive rate floor
+#     max-rpm-per-auth: 30       # adaptive rate ceiling
+#     burst: 3                   # token bucket capacity
+#     decrease-factor: 0.5       # multiplicative rate decrease per upstream 429
+#     increase-ratio: 1.15       # multiplicative rate increase after sustained successes
+#     successes-per-increase: 8  # consecutive successes required before an increase
+#     min-increase-interval: 1m  # minimum time between rate increases
+#     idle-reset: 15m            # reset learned rate back to the seed after this idle time
+#     models:                    # optional: per-model seed/bound overrides (first match wins, "*" wildcards)
+#       - name: "gemini-3.1-flash-image*"
+#         initial-rpm: 3
+#         max-rpm: 8
 
 # Devin provider behavior.
 # devin:

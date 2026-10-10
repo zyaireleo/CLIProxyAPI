@@ -31,6 +31,7 @@ func resetAntigravityCreditsRetryState() {
 	antigravityShortCooldownByAuth.Clear()
 	antigravityCreditsBalanceByAuth.Clear()
 	antigravityCreditsHintRefreshByID.Clear()
+	resetAntigravityRateBuckets()
 }
 
 type closeSignalReadCloser struct {
