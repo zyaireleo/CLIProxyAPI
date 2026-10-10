@@ -193,6 +193,15 @@ func sanitizeAntigravityToolSchemas(payloadStr string, useAntigravitySchema bool
 
 func sanitizeAntigravityToolSchemaDocument(payloadStr string, useAntigravitySchema bool) string {
 	for _, base := range antigravityFunctionDeclarationPaths(payloadStr) {
+		// OpenAI's declaration-level "strict" flag is not a Gemini FunctionDeclaration
+		// field and is rejected as an unknown name on every entry protocol.
+		if gjson.Get(payloadStr, base+".strict").Exists() {
+			if updated, errDelete := sjson.Delete(payloadStr, base+".strict"); errDelete == nil {
+				payloadStr = updated
+			}
+		}
+	}
+	for _, base := range antigravityFunctionDeclarationPaths(payloadStr) {
 		oldPath := base + ".parametersJsonSchema"
 		if !gjson.Get(payloadStr, oldPath).Exists() {
 			continue

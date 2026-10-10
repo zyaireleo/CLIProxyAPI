@@ -452,6 +452,54 @@ func repairSchemaNode(node map[string]any, addMissingArrayItems bool) (map[strin
 		}
 	}
 
+	// Gemini accepts a single items schema; tuple-style lists keep their first entry.
+	if itemsList, ok := clone["items"].([]any); ok && isArrayDeclaredType(clone["type"]) {
+		if len(itemsList) > 0 {
+			clone["items"] = itemsList[0]
+		} else {
+			delete(clone, "items")
+		}
+		modified = true
+	}
+
+	// Gemini rejects keywords that do not apply to the declared type
+	// ("only allowed for OBJECT type", "$type == Type.ARRAY").
+	if declared, ok := clone["type"].(string); ok && declared != "" {
+		if declared != "object" {
+			for _, key := range []string{"properties", "required"} {
+				if _, exists := clone[key]; exists {
+					delete(clone, key)
+					modified = true
+				}
+			}
+		}
+		if declared != "array" {
+			if _, exists := clone["items"]; exists {
+				delete(clone, "items")
+				modified = true
+			}
+		}
+	}
+
+	// Gemini rejects empty enum members ("enum[N]: cannot be empty").
+	if enumValues, ok := clone["enum"].([]any); ok {
+		kept := make([]any, 0, len(enumValues))
+		for _, value := range enumValues {
+			if text, isString := value.(string); isString && strings.TrimSpace(text) == "" {
+				continue
+			}
+			kept = append(kept, value)
+		}
+		if len(kept) != len(enumValues) {
+			if len(kept) == 0 {
+				delete(clone, "enum")
+			} else {
+				clone["enum"] = kept
+			}
+			modified = true
+		}
+	}
+
 	// Gemini and Antigravity reject tool array schemas without an items definition.
 	if addMissingArrayItems && isArrayDeclaredType(clone["type"]) {
 		if _, hasItems := clone["items"]; !hasItems {
