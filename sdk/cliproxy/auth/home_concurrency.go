@@ -309,6 +309,18 @@ func SafeResponseHeaders(err error) http.Header {
 	if errors.As(err, &unavailable) && unavailable != nil {
 		return unavailable.Headers()
 	}
+	// Executor errors that carry an explicit Retry-After (e.g. local pacing skips)
+	// are not wrapped in any of the above types. Forward their wait duration so the
+	// caller receives a Retry-After header rather than retrying immediately.
+	type retryAfterProvider interface {
+		RetryAfter() *time.Duration
+	}
+	var rap retryAfterProvider
+	if errors.As(err, &rap) && rap != nil {
+		if d := rap.RetryAfter(); d != nil && *d > 0 {
+			return safeRetryAfterHeader(*d)
+		}
+	}
 	return nil
 }
 

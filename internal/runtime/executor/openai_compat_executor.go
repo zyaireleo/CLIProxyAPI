@@ -1027,6 +1027,7 @@ type statusErr struct {
 	msg              string
 	retryAfter       *time.Duration
 	credentialScoped bool
+	localPacing      bool
 }
 
 func (e statusErr) Error() string {
@@ -1038,6 +1039,7 @@ func (e statusErr) Error() string {
 func (e statusErr) StatusCode() int            { return e.code }
 func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
 func (e statusErr) IsCredentialScoped() bool   { return e.credentialScoped }
+func (e statusErr) IsLocalPacing() bool        { return e.localPacing }
 
 const openAICompatTPMFallbackRetryAfter = time.Minute
 

@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"net/http"
 	"strings"
@@ -209,9 +208,10 @@ func (e *AntigravityExecutor) antigravityPreflightAcquire(ctx context.Context, a
 	}
 	log.Debugf("antigravity executor: rate limit bucket empty for auth %s model %s (rate %.2f rpm), waiting %s to switch auth", auth.ID, baseModel, bucket.ratePerSec*60, wait)
 	return statusErr{
-		code:       http.StatusTooManyRequests,
-		msg:        fmt.Sprintf("auth rate budget exhausted for model %s, %s until next token", baseModel, wait),
-		retryAfter: &wait,
+		code:        http.StatusTooManyRequests,
+		msg:         `{"error":{"code":"429","message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`,
+		retryAfter:  &wait,
+		localPacing: true,
 	}
 }
 

@@ -329,6 +329,16 @@ func isRequestTerminatedError(err error) bool {
 	return errors.As(err, &terminated) && terminated != nil
 }
 
+// isLocalPacingSkipError returns true for errors emitted by the Antigravity
+// AIMD token bucket (antigravityPreflightAcquire). These never touched the
+// upstream, so they must not consume a retry-credential slot, write quota
+// cooldown state, or appear in upstream-failure logs at WARN level.
+func isLocalPacingSkipError(err error) bool {
+	type localPacer interface{ IsLocalPacing() bool }
+	var lp localPacer
+	return errors.As(err, &lp) && lp != nil && lp.IsLocalPacing()
+}
+
 func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExecutor, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, requestedModel string) (cliproxyexecutor.Request, cliproxyexecutor.Options, error) {
 	if opts.RequestAfterAuthInterceptor == nil {
 		return req, opts, nil
@@ -612,6 +622,20 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
+			if isLocalPacingSkipError(errExec) {
+				// Local pacing skip: the bucket was empty for this (auth, model).
+				// Do not count this as an attempted slot (it never hit the upstream),
+				// and do not write a quota cooldown. Record as availability-neutral
+				// so hooks and metrics still see the event, then try the next credential.
+				delete(attempted, auth.ID)
+				m.recordAvailabilityNeutralResult(execCtx, Result{
+					AuthID: auth.ID, Provider: provider, Model: resultModel,
+					RouteModel: routeModel, Success: false, Options: execOpts,
+					SkipQuotaObservation: true,
+				})
+				authErr = errExec
+				continue
+			}
 			if errExec != nil {
 				if hasUpstreamExecutionAttempt(errExec) {
 					upstreamErr = errExec
@@ -852,6 +876,16 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
+			if isLocalPacingSkipError(errExec) {
+				delete(attempted, auth.ID)
+				m.recordAvailabilityNeutralResult(execCtx, Result{
+					AuthID: auth.ID, Provider: provider, Model: resultModel,
+					RouteModel: routeModel, Success: false, Options: execOpts,
+					SkipQuotaObservation: true,
+				})
+				authErr = errExec
+				continue
+			}
 			if errExec != nil {
 				if hasUpstreamExecutionAttempt(errExec) {
 					upstreamErr = errExec
@@ -2000,6 +2034,13 @@ func warnLogUpstreamFailure(ctx context.Context, entry *log.Entry, provider, mod
 		} else {
 			entry = log.NewEntry(log.StandardLogger())
 		}
+	}
+	// Local pacing skips never touched the upstream; log at DEBUG so ops scripts
+	// counting WARN-level upstream failures don't include them.
+	if isLocalPacingSkipError(err) {
+		authIdent := formatAuthIdentity(auth, provider)
+		entry.Debugf("antigravity pacing skip, rotating auth: provider=%s model=%s auth=%s", provider, model, authIdent)
+		return
 	}
 	if provider == "antigravity" && cliproxyexecutor.FlashImageModel(model) {
 		id := ""

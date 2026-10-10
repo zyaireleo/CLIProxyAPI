@@ -288,6 +288,18 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		streamResult, errStream = validateStreamResult(streamResult, errStream)
 		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
 		if errStream != nil {
+			if isLocalPacingSkipError(errStream) {
+				// Local pacing skip in streaming path: treat identically to the
+				// non-streaming executor path — neutral result, no slot consumption.
+				// The caller's outer loop already excluded this auth via 'tried'.
+				m.recordExecutionResult(ctx, Result{
+					AuthID: auth.ID, Provider: provider, Model: resultModel,
+					RouteModel: routeModel, Success: false, Options: execOpts,
+					SkipQuotaObservation: true,
+				}, auth, ephemeralResult)
+				lastErr = errStream
+				continue
+			}
 			rerr := resultErrorFromError(errStream)
 			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.runtimeConfigSnapshot())
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
