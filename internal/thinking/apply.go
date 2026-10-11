@@ -232,7 +232,7 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 	// Unknown models are treated as user-defined so thinking config can still be applied.
 	// The upstream service is responsible for validating the configuration.
 	if IsUserDefinedModel(modelInfo) {
-		return applyUserDefinedModel(body, modelInfo, fromFormat, providerFormat, providerKey, suffixResult, summaryConfig)
+		return applyUserDefinedModel(body, sourceBody, modelInfo, fromFormat, providerFormat, providerKey, suffixResult, summaryConfig)
 	}
 	if modelInfo.Thinking == nil {
 		config := extractThinkingConfig(body, providerFormat)
@@ -286,6 +286,8 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 				"model":           modelInfo.ID,
 				"output_budget":   guardBudget,
 				"guard_threshold": smallOutputBudgetThreshold,
+				"guard_form":      thinkingGuardForm(guardConfig),
+				"guard_level":     guardConfig.Level,
 			}).Info("thinking: small output budget, suppressing thinking |")
 			config = guardConfig
 		} else {
@@ -447,7 +449,7 @@ func parseSuffixToConfig(rawSuffix, provider, model string) ThinkingConfig {
 
 // applyUserDefinedModel applies thinking configuration for user-defined models
 // without ThinkingSupport validation.
-func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromFormat, toFormat, providerKey string, suffixResult SuffixResult, summaryConfig SummaryConfig) ([]byte, error) {
+func applyUserDefinedModel(body, sourceBody []byte, modelInfo *registry.ModelInfo, fromFormat, toFormat, providerKey string, suffixResult SuffixResult, summaryConfig SummaryConfig) ([]byte, error) {
 	// Get model ID for logging
 	modelID := ""
 	if modelInfo != nil {
@@ -483,15 +485,19 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 		}
 	}
 
+	guardGenerated := false
 	if !hasThinkingConfig(config) {
-		if guardConfig, guardBudget := outputBudgetGuard(body, nil, fromFormat, toFormat, modelInfo); hasThinkingConfig(guardConfig) {
+		if guardConfig, guardBudget := outputBudgetGuard(body, sourceBody, fromFormat, toFormat, modelInfo); hasThinkingConfig(guardConfig) {
 			log.WithFields(log.Fields{
 				"provider":        toFormat,
 				"model":           modelID,
 				"output_budget":   guardBudget,
 				"guard_threshold": smallOutputBudgetThreshold,
+				"guard_form":      thinkingGuardForm(guardConfig),
+				"guard_level":     guardConfig.Level,
 			}).Info("thinking: small output budget, suppressing thinking |")
 			config = guardConfig
+			guardGenerated = true
 		} else {
 			log.WithFields(log.Fields{
 				"model":    modelID,
@@ -510,7 +516,8 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 		return body, nil
 	}
 
-	config = normalizeUserDefinedConfig(config, fromFormat, toFormat)
+	preserveGuardLevel := guardGenerated && isGemini38FlashModel(modelInfo) && config.Mode == ModeLevel && config.Level == LevelLow
+	config = normalizeUserDefinedConfig(config, fromFormat, toFormat, preserveGuardLevel)
 	log.WithFields(log.Fields{
 		"provider": toFormat,
 		"model":    modelID,
@@ -528,8 +535,8 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 	return applySummaryConfigForProvider(applied, toFormat, modelID, providerKey, modelInfo, summaryConfig), nil
 }
 
-func normalizeUserDefinedConfig(config ThinkingConfig, fromFormat, toFormat string) ThinkingConfig {
-	if config.Mode != ModeLevel {
+func normalizeUserDefinedConfig(config ThinkingConfig, fromFormat, toFormat string, preserveLevel bool) ThinkingConfig {
+	if config.Mode != ModeLevel || preserveLevel {
 		return config
 	}
 	if toFormat == "claude" {
@@ -943,11 +950,10 @@ func extractCodexUsageConfig(body []byte) ThinkingConfig {
 // marks the model as unreachable (api-router-ops S-12, 2026-10-08).
 const smallOutputBudgetThreshold = 1024
 
-// outputBudgetGuard returns a minimal-thinking fallback for requests whose output
-// budget is tiny and which carry no explicit thinking configuration. It applies
-// only to gemini/antigravity targets on thinking-capable models whose level set
-// contains "minimal" (the pipeline cannot express a true zero-thinking budget for
-// level-bearing models, so models without "minimal" are left untouched).
+// outputBudgetGuard adds the smallest supported thinking suppression when the output
+// budget is tiny and the request carries no explicit thinking configuration. It
+// applies only to gemini/antigravity targets. Gemini 3.8 uses the upstream-accepted
+// low level; other models retain the existing budget=1 behavior when Min==1.
 // Explicit body config and model-name suffixes always win: this helper is only
 // consulted from the no-config branch of applyThinking.
 // Returns the guard config (empty when not applicable) and the detected budget
@@ -966,16 +972,46 @@ func outputBudgetGuard(body, sourceBody []byte, fromFormat, toFormat string, mod
 	if !ok || budget <= 0 || budget > smallOutputBudgetThreshold {
 		return ThinkingConfig{}, budget
 	}
-	// Suppression form: thinkingBudget=1 — the only form that survives BOTH paths
-	// untouched: registered path (Min==1 passes strict validation without
-	// ZeroAllowed) and user-defined path (normalizeUserDefinedConfig only rewrites
-	// ModeLevel, ModeBudget passes as-is). Upstream-accepted on Gemini 3.x with
-	// effectively zero thinking (S-12 probe evidence, 2026-10-08: budget 1 → 200,
-	// zero thought tokens, final answer within a 16-token budget).
+	if isGemini38FlashModel(modelInfo) {
+		if !isLevelSupported(string(LevelLow), modelInfo.Thinking.Levels) {
+			return ThinkingConfig{}, budget
+		}
+		return ThinkingConfig{Mode: ModeLevel, Level: LevelLow}, budget
+	}
+	// Suppression form for other models: thinkingBudget=1. This survives both
+	// registered and user-defined paths and remains the established behavior for
+	// models such as Gemini 3.1 Flash Lite, Gemini 3.7 Flash, Gemini 2.5 Flash,
+	// and Gemini Pro when Min==1.
 	if modelInfo.Thinking.Min != 1 {
 		return ThinkingConfig{}, budget
 	}
 	return ThinkingConfig{Mode: ModeBudget, Budget: 1}, budget
+}
+
+func isGemini38FlashModel(modelInfo *registry.ModelInfo) bool {
+	if modelInfo == nil {
+		return false
+	}
+	return isGemini38FlashModelID(modelInfo.ID) || isGemini38FlashModelID(modelInfo.MetadataModelID)
+}
+
+func isGemini38FlashModelID(modelID string) bool {
+	switch strings.ToLower(strings.TrimSpace(modelID)) {
+	case "gemini-3.8-flash", "gemini-3.8-flash-high":
+		return true
+	default:
+		return false
+	}
+}
+
+func thinkingGuardForm(config ThinkingConfig) string {
+	if config.Mode == ModeLevel {
+		return "level"
+	}
+	if config.Mode == ModeBudget {
+		return "budget"
+	}
+	return ""
 }
 
 // outputBudgetOf reads the caller-declared output budget from a request body of
