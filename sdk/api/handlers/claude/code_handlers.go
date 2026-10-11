@@ -172,7 +172,7 @@ func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSO
 	c.Header("Content-Type", "application/json")
 	alt := h.GetAlt(c)
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx, gjson.GetBytes(rawJSON, "model").String())
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 

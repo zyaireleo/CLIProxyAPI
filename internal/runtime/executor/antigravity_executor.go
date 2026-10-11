@@ -780,6 +780,11 @@ func repairAntigravityGeminiFunctionResponseNames(rawJSON []byte) []byte {
 }
 
 func validateAntigravityRequestSignatures(ctx context.Context, modelName string, from sdktranslator.Format, rawJSON []byte) ([]byte, error) {
+	if strings.HasPrefix(strings.ToLower(modelName), "gemini") {
+		if err := helps.ValidateGeminiClientFunctionArguments(rawJSON); err != nil {
+			return nil, err
+		}
+	}
 	if from.String() != "claude" {
 		return rawJSON, nil
 	}

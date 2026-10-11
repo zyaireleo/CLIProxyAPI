@@ -116,9 +116,9 @@ func imageSafetyFinish(reason string) bool {
 	return false
 }
 
-func antigravityImageStatusError(model string, status int, body []byte) error {
+func antigravityImageStatusError(model string, status int, body []byte, headers ...http.Header) error {
 	if !cliproxyexecutor.FlashImageModel(model) {
-		return newAntigravityStatusErr(status, body)
+		return newAntigravityStatusErr(status, body, headers...)
 	}
 	if status == http.StatusBadRequest {
 		return &cliproxyexecutor.ImageFailure{Code: "invalid_request_error", Message: "Upstream rejected this image request", Status: status, Stop: true}

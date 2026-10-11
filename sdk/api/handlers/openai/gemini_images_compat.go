@@ -104,13 +104,21 @@ func geminiImageDataPart(value string) (geminiImagePart, error) {
 	if !strings.Contains(strings.ToLower(header), ";base64") {
 		return geminiImagePart{}, fmt.Errorf("image data URL must be base64 encoded")
 	}
-	if _, err := base64.StdEncoding.DecodeString(data); err != nil {
+	if base64.StdEncoding.DecodedLen(len(data)) > 20<<20 {
+		return geminiImagePart{}, fmt.Errorf("image input exceeds 20 MiB")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
 		return geminiImagePart{}, fmt.Errorf("image data URL is invalid: %w", err)
 	}
 	mimeType := strings.SplitN(header[5:], ";", 2)[0]
 	if mimeType == "" {
 		mimeType = "image/png"
 	}
+	if len(decoded) == 0 || !strings.HasPrefix(strings.ToLower(mimeType), "image/") || !strings.HasPrefix(http.DetectContentType(decoded), "image/") {
+		return geminiImagePart{}, fmt.Errorf("image input must contain valid image bytes and MIME")
+	}
+	mimeType = http.DetectContentType(decoded)
 	return geminiImagePart{InlineData: &geminiInlineImageData{MimeType: mimeType, Data: data}}, nil
 }
 
@@ -130,6 +138,15 @@ func validateGeminiImageOptions(responseFormat string, n int64, quality, backgro
 	}
 	if strings.TrimSpace(background) != "" {
 		return fmt.Errorf("background is not supported for Gemini image generation")
+	}
+	return nil
+}
+
+func validateGeminiImageExtraOptions(present func(string) bool) error {
+	for _, name := range []string{"mask", "style", "output_format", "output_compression", "partial_images", "moderation", "input_fidelity"} {
+		if present(name) {
+			return fmt.Errorf("%s is not supported for Gemini images", name)
+		}
 	}
 	return nil
 }
@@ -221,7 +238,7 @@ func (h *OpenAIAPIHandler) handleGeminiNativeImages(c *gin.Context, model, promp
 	defer cliCancel()
 	// Image errors must retain their HTTP status until generation completes.
 	if !coreexecutor.FlashImageModel(model) {
-		stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+		stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx, model)
 		defer stopKeepAlive()
 	}
 	resp, upstreamHeaders, errMsg := h.ExecuteImageWithAuthManager(cliCtx, "gemini", imagesModelBase(model), rawJSON, "")

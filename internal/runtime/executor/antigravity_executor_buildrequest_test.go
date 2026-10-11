@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
@@ -38,6 +39,42 @@ func TestResolveAntigravityRequestBaseURL(t *testing.T) {
 func TestAntigravityLoadCodeAssistBaseURLRemainsProdByDefault(t *testing.T) {
 	if got := antigravityLoadCodeAssistBaseURL(&cliproxyauth.Auth{}); got != antigravityBaseURLProd {
 		t.Fatalf("loadCodeAssist base URL = %q, want %q", got, antigravityBaseURLProd)
+	}
+}
+
+func TestAntigravityBuildRequest_PreservesGeminiOutputBudgetWhenRecoveryEnabled(t *testing.T) {
+	for _, withTools := range []bool{false, true} {
+		name := "without tools"
+		if withTools {
+			name = "with tool schema"
+		}
+		t.Run(name, func(t *testing.T) {
+			request := map[string]any{
+				"contents":         []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+				"generationConfig": map[string]any{"maxOutputTokens": 1},
+			}
+			if withTools {
+				request["tools"] = []any{map[string]any{"functionDeclarations": []any{map[string]any{
+					"name": "probe", "parameters": map[string]any{"type": "object", "properties": map[string]any{}},
+				}}}}
+			}
+			payload, err := json.Marshal(map[string]any{"request": request})
+			if err != nil {
+				t.Fatal(err)
+			}
+			executor := &AntigravityExecutor{cfg: &config.Config{AntigravityGeminiMaxAttempts: 4}}
+			auth := &cliproxyauth.Auth{Metadata: map[string]any{"project_id": "project-1"}}
+			req, err := executor.buildRequest(context.Background(), auth, "token", "gemini-3.8-flash-high", payload, false, "", "https://example.com")
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := requestBody(t, req)
+			wireRequest := body["request"].(map[string]any)
+			generation := wireRequest["generationConfig"].(map[string]any)
+			if got := generation["maxOutputTokens"]; got != float64(1) {
+				t.Fatalf("upstream maxOutputTokens = %v, want client's limit 1", got)
+			}
+		})
 	}
 }
 

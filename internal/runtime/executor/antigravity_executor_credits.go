@@ -333,11 +333,38 @@ func antigravityHasExplicitCreditsBalanceExhaustedReason(body []byte) bool {
 	return false
 }
 
-func newAntigravityStatusErr(statusCode int, body []byte) statusErr {
+func newAntigravityStatusErr(statusCode int, body []byte, headers ...http.Header) statusErr {
 	err := statusErr{code: statusCode, msg: string(body)}
+	for _, detail := range gjson.GetBytes(body, "error.details").Array() {
+		reason := strings.ToUpper(detail.Get("reason").String())
+		if reason == "MODEL_CAPACITY_EXHAUSTED" || reason == "MODEL_OVERLOADED" {
+			err.code = http.StatusServiceUnavailable
+			updated, _ := sjson.SetBytes(body, "error.code", "upstream_capacity_exhausted")
+			err.msg = string(updated)
+		}
+		scope := strings.ToLower(strings.TrimSpace(detail.Get("metadata.quota_scope").String()))
+		if scope == "" {
+			scope = strings.ToLower(strings.TrimSpace(detail.Get("metadata.quotaScope").String()))
+		}
+		if scope == "global" || scope == "credential" {
+			err.credentialScoped = true
+		}
+	}
 	if statusCode == http.StatusTooManyRequests {
 		if retryAfter, parseErr := helps.ParseRetryDelay(body); parseErr == nil && retryAfter != nil {
 			err.retryAfter = retryAfter
+		}
+		if len(headers) > 0 {
+			raw := strings.TrimSpace(headers[0].Get("Retry-After"))
+			delay := time.Duration(-1)
+			if seconds, parseErr := strconv.ParseInt(raw, 10, 64); parseErr == nil && seconds >= 0 {
+				delay = time.Duration(seconds) * time.Second
+			} else if deadline, parseErr := http.ParseTime(raw); parseErr == nil {
+				delay = time.Until(deadline)
+			}
+			if delay > 0 && (err.retryAfter == nil || delay > *err.retryAfter) {
+				err.retryAfter = &delay
+			}
 		}
 	}
 	return err

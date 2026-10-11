@@ -587,8 +587,11 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 
 // StartNonStreamingKeepAlive emits blank lines every 5 seconds while waiting for a non-streaming response.
 // It returns a stop function that must be called before writing the final response.
-func (h *BaseAPIHandler) StartNonStreamingKeepAlive(c *gin.Context, ctx context.Context) func() {
+func (h *BaseAPIHandler) StartNonStreamingKeepAlive(c *gin.Context, ctx context.Context, model ...string) func() {
 	if h == nil || c == nil {
+		return func() {}
+	}
+	if len(model) > 0 && strings.HasPrefix(strings.ToLower(strings.TrimSpace(model[0])), "gemini") {
 		return func() {}
 	}
 	interval := NonStreamingKeepAliveInterval(h.Cfg)

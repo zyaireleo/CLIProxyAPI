@@ -76,6 +76,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.RequestRetry != newCfg.RequestRetry {
 		changes = append(changes, fmt.Sprintf("request-retry: %d -> %d", oldCfg.RequestRetry, newCfg.RequestRetry))
 	}
+	if oldCfg.AntigravityGeminiMaxAttempts != newCfg.AntigravityGeminiMaxAttempts {
+		changes = append(changes, fmt.Sprintf("antigravity-gemini-max-attempts: %d -> %d", oldCfg.AntigravityGeminiMaxAttempts, newCfg.AntigravityGeminiMaxAttempts))
+	}
 	if oldCfg.MaxRetryCredentials != newCfg.MaxRetryCredentials {
 		changes = append(changes, fmt.Sprintf("max-retry-credentials: %d -> %d", oldCfg.MaxRetryCredentials, newCfg.MaxRetryCredentials))
 	}

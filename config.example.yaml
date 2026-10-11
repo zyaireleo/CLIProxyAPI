@@ -172,6 +172,12 @@ passthrough-headers: false
 # rounds, while an omitted or negative override inherits this global setting.
 request-retry: 3
 
+# Total generation HTTP calls for one Antigravity Gemini request, including
+# credential switches, empty-response recovery, and credits fallback.
+# 0 preserves the legacy retry policy. Production Gemini channels can set 4.
+# Token refresh and countTokens do not consume this generation budget.
+antigravity-gemini-max-attempts: 0
+
 # Maximum number of different credentials to try in each credential retry round
 # after per-credential round filtering. Set to 0 to try all available
 # credentials. Credentials skipped by this cap still age with the global round,

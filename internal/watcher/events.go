@@ -32,6 +32,11 @@ func (w *Watcher) start(ctx context.Context) error {
 		return errAddConfig
 	}
 	log.Debugf("watching config file: %s", w.configPath)
+	// Atomic replacements detach an inode watch. The parent watch continues
+	// delivering events for the configured path and future replacements.
+	if err := w.watcher.Add(filepath.Dir(w.configPath)); err != nil {
+		return err
+	}
 
 	if errAddAuthDir := w.watcher.Add(w.authDir); errAddAuthDir != nil {
 		log.Errorf("failed to watch auth directory %s: %v", w.authDir, errAddAuthDir)
@@ -66,7 +71,7 @@ func (w *Watcher) processEvents(ctx context.Context) {
 
 func (w *Watcher) handleEvent(event fsnotify.Event) {
 	// Filter only relevant events: config file or auth-dir JSON files.
-	configOps := fsnotify.Write | fsnotify.Create | fsnotify.Rename
+	configOps := fsnotify.Write | fsnotify.Create | fsnotify.Rename | fsnotify.Remove
 	normalizedName := w.normalizeAuthPath(event.Name)
 	normalizedConfigPath := w.normalizeAuthPath(w.configPath)
 	normalizedAuthDir := w.normalizeAuthPath(w.authDir)

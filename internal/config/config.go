@@ -82,6 +82,9 @@ type Config struct {
 	// RequestRetry defines the number of additional credential retry rounds after
 	// the first round has exhausted its eligible credentials.
 	RequestRetry int `yaml:"request-retry" json:"request-retry"`
+	// AntigravityGeminiMaxAttempts bounds all generation calls across credential retry rounds.
+	// Zero preserves legacy retry budgets.
+	AntigravityGeminiMaxAttempts int `yaml:"antigravity-gemini-max-attempts" json:"antigravity-gemini-max-attempts"`
 	// MaxRetryCredentials defines the maximum number of different credentials to
 	// try in each credential retry round.
 	// Set to 0 or a negative value to keep trying all available credentials (legacy behavior).

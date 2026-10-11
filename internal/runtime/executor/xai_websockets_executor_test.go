@@ -2190,6 +2190,7 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 	serverPongCh := make(chan string, 1)
 	inWriteHook := make(chan struct{})
 	pongDeliveredDuringWrite := make(chan struct{})
+	requestReceived := make(chan struct{})
 
 	testWebsocketWritePayloadHook = func(conn *websocket.Conn) {
 		close(inWriteHook)
@@ -2215,6 +2216,10 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 		})
 
 		go func() {
+			if _, _, errRead := conn.ReadMessage(); errRead != nil {
+				return
+			}
+			close(requestReceived)
 			for {
 				if _, _, errReadLoop := conn.ReadMessage(); errReadLoop != nil {
 					return
@@ -2239,6 +2244,14 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 			close(pongDeliveredDuringWrite)
 		case <-time.After(2 * time.Second):
 			t.Errorf("pong was not received while payload write was in progress")
+			return
+		}
+
+		// A completion must follow the uploaded request, not just its keepalive pong.
+		select {
+		case <-requestReceived:
+		case <-time.After(2 * time.Second):
+			t.Error("request payload was not received after the write hook resumed")
 			return
 		}
 
@@ -2286,6 +2299,7 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 	serverPongCh := make(chan string, 1)
 	inWriteHook := make(chan struct{})
 	pongDeliveredDuringWrite := make(chan struct{})
+	requestReceived := make(chan struct{})
 
 	testWebsocketWritePayloadHook = func(conn *websocket.Conn) {
 		close(inWriteHook)
@@ -2311,6 +2325,10 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 		})
 
 		go func() {
+			if _, _, errRead := conn.ReadMessage(); errRead != nil {
+				return
+			}
+			close(requestReceived)
 			for {
 				if _, _, errReadLoop := conn.ReadMessage(); errReadLoop != nil {
 					return
@@ -2335,6 +2353,14 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			close(pongDeliveredDuringWrite)
 		case <-time.After(2 * time.Second):
 			t.Errorf("pong was not received while payload write was in progress on sessionless connection")
+			return
+		}
+
+		// A completion must follow the uploaded request, not just its keepalive pong.
+		select {
+		case <-requestReceived:
+		case <-time.After(2 * time.Second):
+			t.Error("request payload was not received after the write hook resumed")
 			return
 		}
 

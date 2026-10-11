@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/geminiresponse"
 	"io"
 	"net"
 	"net/http"
@@ -902,7 +903,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 									}
 									next = now.Add(cooldown).Round(0)
 								} else {
-									next, backoffLevel = quotaCooldownAfterFailure(state.Quota, now)
+									if strings.EqualFold(auth.Provider, "antigravity") && strings.HasPrefix(strings.ToLower(result.Model), "gemini") {
+										next, backoffLevel = geminiQuotaCooldownAfterFailure(state.Quota, now)
+									} else {
+										next, backoffLevel = quotaCooldownAfterFailure(state.Quota, now)
+									}
 								}
 								if state.Quota.Exceeded && state.Quota.NextRecoverAt.After(next) {
 									next = state.Quota.NextRecoverAt
@@ -1483,7 +1488,10 @@ func resultErrorFromError(err error) *Error {
 	if resultErr.HTTPStatus == 0 {
 		resultErr.HTTPStatus = statusCodeFromError(err)
 	}
+	var regional *geminiresponse.Error
 	switch {
+	case errors.As(err, &regional) && regional.RouteFault:
+		resultErr.Code = "gemini_regional_route"
 	case isExplicitModelNotFoundError(err, ""):
 		if resultErr.Code == "" || resultErr.Code == requestScopedErrorCode {
 			resultErr.Code = "model_not_found"
@@ -1510,6 +1518,9 @@ func resultErrorFromError(err error) *Error {
 // Connection lifecycle is intentionally separate from request_scoped so transport
 // drops do not also stop credential rotation via isRequestInvalidError.
 func shouldSkipCredentialCooldown(err *Error) bool {
+	if err != nil && err.Code == "gemini_regional_route" {
+		return true
+	}
 	if err != nil && err.Code == ErrorCodeForceCooldown {
 		return false
 	}
@@ -2141,6 +2152,10 @@ func isMissingModelPhrase(value string) bool {
 // error that should neither rotate nor penalize credentials. Model-support
 // errors remain eligible for alternate routing and keep their model-level state.
 func isRequestInvalidError(err error) bool {
+	var regional *geminiresponse.Error
+	if errors.As(err, &regional) && regional.RouteFault {
+		return false
+	}
 	if err == nil {
 		return false
 	}
@@ -2294,6 +2309,24 @@ func quotaCooldownAfterFailure(quota QuotaState, now time.Time) (time.Time, int)
 		next = now.Add(cooldown).Round(0)
 	}
 	return next, nextLevel
+}
+
+// Gemini's unknown quota failures use a bounded recovery window per native model.
+// Concurrent failures reuse an active window, and explicit longer deadlines survive.
+func geminiQuotaCooldownAfterFailure(quota QuotaState, now time.Time) (time.Time, int) {
+	if quota.NextRecoverAt.After(now) {
+		return quota.NextRecoverAt, quota.BackoffLevel
+	}
+	level := quota.BackoffLevel
+	if level < 0 {
+		level = 0
+	}
+	cooldown := 300 * time.Second
+	if level < 4 {
+		cooldown = 30 * time.Second * time.Duration(1<<level)
+		level++
+	}
+	return now.Add(cooldown).Round(0), level
 }
 
 // nextQuotaCooldown returns the next cooldown duration and updated backoff level for repeated quota errors.
