@@ -313,6 +313,7 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 		config.Level = mapConfiguredHighIntent(config.Level, modelInfo)
 	}
 
+	config, _ = normalizeGemini38Minimal(config, providerFormat, modelInfo)
 	// 5. Validate and normalize configuration
 	validated, err := ValidateConfig(config, modelInfo, fromFormat, providerFormat, suffixResult.HasSuffix)
 	if err != nil {
@@ -516,7 +517,9 @@ func applyUserDefinedModel(body, sourceBody []byte, modelInfo *registry.ModelInf
 		return body, nil
 	}
 
-	preserveGuardLevel := guardGenerated && isGemini38FlashModel(modelInfo) && config.Mode == ModeLevel && config.Level == LevelLow
+	var minimalNormalized bool
+	config, minimalNormalized = normalizeGemini38Minimal(config, toFormat, modelInfo)
+	preserveGuardLevel := minimalNormalized || (guardGenerated && isGemini38FlashModel(modelInfo) && config.Mode == ModeLevel && config.Level == LevelLow)
 	config = normalizeUserDefinedConfig(config, fromFormat, toFormat, preserveGuardLevel)
 	log.WithFields(log.Fields{
 		"provider": toFormat,
@@ -993,6 +996,22 @@ func isGemini38FlashModel(modelInfo *registry.ModelInfo) bool {
 		return false
 	}
 	return isGemini38FlashModelID(modelInfo.ID) || isGemini38FlashModelID(modelInfo.MetadataModelID)
+}
+
+// normalizeGemini38Minimal preserves the caller's lowest-thinking intent when
+// Antigravity Gemini 3.8 advertises low as its minimum supported level. Resolve
+// suffix precedence before calling this helper, including configured aliases.
+func normalizeGemini38Minimal(config ThinkingConfig, provider string, modelInfo *registry.ModelInfo) (ThinkingConfig, bool) {
+	if provider != "antigravity" || config.Mode != ModeLevel || config.Level != LevelMinimal ||
+		!isGemini38FlashModel(modelInfo) || modelInfo.Thinking == nil ||
+		isLevelSupported(string(LevelMinimal), modelInfo.Thinking.Levels) ||
+		!isLevelSupported(string(LevelLow), modelInfo.Thinking.Levels) {
+		return config, false
+	}
+	config.Level = LevelLow
+	log.WithFields(log.Fields{"provider": provider, "model": modelInfo.ID, "from_level": LevelMinimal, "to_level": LevelLow}).
+		Info("thinking: normalized Gemini 3.8 minimal compatibility |")
+	return config, true
 }
 
 func isGemini38FlashModelID(modelID string) bool {
