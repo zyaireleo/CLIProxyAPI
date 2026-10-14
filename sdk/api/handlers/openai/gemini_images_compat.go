@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +41,7 @@ type geminiImageConfig struct {
 type geminiImageGenerationConfig struct {
 	ResponseModalities []string           `json:"responseModalities"`
 	ImageConfig        *geminiImageConfig `json:"imageConfig,omitempty"`
+	Seed               *int32             `json:"seed,omitempty"`
 }
 
 type geminiImageRequest struct {
@@ -59,7 +61,7 @@ func isGeminiNativeImagesModel(model string) bool {
 
 func geminiImageAspectRatio(size string) string {
 	switch strings.ToLower(strings.TrimSpace(size)) {
-	case "1024x1024", "2048x2048", "1:1", "square":
+	case "1024x1024", "2048x2048", "4096x4096", "1:1", "square":
 		return "1:1"
 	case "1792x1024", "16:9", "landscape":
 		return "16:9"
@@ -73,6 +75,8 @@ func geminiImageAspectRatio(size string) string {
 		return "16:9"
 	case "768x1344":
 		return "9:16"
+	case "3:4", "4:3", "4:5", "5:4", "21:9":
+		return strings.ToLower(strings.TrimSpace(size))
 	default:
 		return ""
 	}
@@ -82,6 +86,10 @@ func geminiImageSize(size string) string {
 	switch strings.ToLower(strings.TrimSpace(size)) {
 	case "1k", "2k", "4k":
 		return strings.ToUpper(strings.TrimSpace(size))
+	case "2048x2048":
+		return "2K"
+	case "4096x4096":
+		return "4K"
 	default:
 		return ""
 	}
@@ -153,13 +161,13 @@ func validateGeminiImageExtraOptions(present func(string) bool) error {
 
 func validateGeminiImageSize(size string) error {
 	size = strings.TrimSpace(size)
-	if size != "" && geminiImageAspectRatio(size) == "" && geminiImageSize(size) == "" {
+	if size != "" && !strings.EqualFold(size, "auto") && geminiImageAspectRatio(size) == "" && geminiImageSize(size) == "" {
 		return fmt.Errorf("size %q is not supported", size)
 	}
 	return nil
 }
 
-func buildGeminiImageRequest(model, prompt, size string, images []string) ([]byte, error) {
+func buildGeminiImageRequest(model, prompt, size string, images []string, seed *int32) ([]byte, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return nil, fmt.Errorf("prompt is required")
 	}
@@ -171,7 +179,7 @@ func buildGeminiImageRequest(model, prompt, size string, images []string) ([]byt
 		}
 		parts = append(parts, part)
 	}
-	config := geminiImageGenerationConfig{ResponseModalities: []string{"IMAGE", "TEXT"}}
+	config := geminiImageGenerationConfig{ResponseModalities: []string{"IMAGE", "TEXT"}, Seed: seed}
 	imageConfig := &geminiImageConfig{AspectRatio: geminiImageAspectRatio(size), ImageSize: geminiImageSize(size)}
 	if imageConfig.AspectRatio != "" || imageConfig.ImageSize != "" {
 		config.ImageConfig = imageConfig
@@ -224,12 +232,30 @@ func parseGeminiImageResponse(payload []byte, responseFormat string) ([]byte, er
 	return json.Marshal(output)
 }
 
-func (h *OpenAIAPIHandler) handleGeminiNativeImages(c *gin.Context, model, prompt, size, responseFormat string, images []string, stream bool) {
+func parseGeminiImageSeed(raw string) (*int32, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return nil, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("seed must be a signed 32-bit integer")
+	}
+	seed := int32(value)
+	return &seed, nil
+}
+
+func (h *OpenAIAPIHandler) handleGeminiNativeImages(c *gin.Context, model, prompt, size, responseFormat string, images []string, stream bool, seedRaw string) {
 	if stream {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "streaming is not supported for Gemini native image compatibility", Type: "invalid_request_error"}})
 		return
 	}
-	rawJSON, err := buildGeminiImageRequest(model, prompt, size, images)
+	seed, err := parseGeminiImageSeed(seedRaw)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
+		return
+	}
+	rawJSON, err := buildGeminiImageRequest(model, prompt, size, images, seed)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
 		return
