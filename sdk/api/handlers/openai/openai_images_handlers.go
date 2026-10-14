@@ -675,7 +675,7 @@ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
 			return
 		}
-		h.handleGeminiNativeImages(c, imageModel, prompt, size, responseFormat, nil, stream)
+		h.handleGeminiNativeImages(c, imageModel, prompt, size, responseFormat, nil, stream, gjson.GetBytes(rawJSON, "seed").Raw)
 		return
 	}
 
@@ -837,7 +837,11 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
 			return
 		}
-		h.handleGeminiNativeImages(c, imageModel, prompt, size, responseFormat, images, stream)
+		if len(form.File["seed"]) > 0 {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: seed must be an integer field", Type: "invalid_request_error"}})
+			return
+		}
+		h.handleGeminiNativeImages(c, imageModel, prompt, size, responseFormat, images, stream, c.PostForm("seed"))
 		return
 	}
 
@@ -1047,7 +1051,7 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
 			return
 		}
-		h.handleGeminiNativeImages(c, imageModel, prompt, size, responseFormat, images, stream)
+		h.handleGeminiNativeImages(c, imageModel, prompt, size, responseFormat, images, stream, gjson.GetBytes(rawJSON, "seed").Raw)
 		return
 	}
 

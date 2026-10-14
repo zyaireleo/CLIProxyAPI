@@ -31,7 +31,7 @@ func TestGeminiNativeImagesModels(t *testing.T) {
 }
 
 func TestBuildGeminiImageRequest(t *testing.T) {
-	req, err := buildGeminiImageRequest("gemini-3.1-flash-image", "edit this", "1792x1024", []string{"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+cL1kAAAAASUVORK5CYII="})
+	req, err := buildGeminiImageRequest("gemini-3.1-flash-image", "edit this", "1792x1024", []string{"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+cL1kAAAAASUVORK5CYII="}, nil)
 	if err != nil {
 		t.Fatalf("buildGeminiImageRequest error: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestBuildGeminiImageRequest(t *testing.T) {
 }
 
 func TestBuildGeminiImageRequestRejectsInvalidImageData(t *testing.T) {
-	if _, err := buildGeminiImageRequest("gemini-3.1-flash-image", "draw", "", []string{"data:image/png;base64,not-base64"}); err == nil {
+	if _, err := buildGeminiImageRequest("gemini-3.1-flash-image", "draw", "", []string{"data:image/png;base64,not-base64"}, nil); err == nil {
 		t.Fatal("expected malformed image data URL to fail")
 	}
 }
