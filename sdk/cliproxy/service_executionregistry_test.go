@@ -3046,3 +3046,24 @@ func TestServiceSerializesHomeAndWatcherConfigRuntimeApply(t *testing.T) {
 		t.Fatal("Home config worker did not stop")
 	}
 }
+
+func TestSessionAffinityDisableReplacesSelector(t *testing.T) {
+	manager := coreauth.NewManager(nil, &coreauth.RoundRobinSelector{}, nil)
+	service := &Service{cfg: &config.Config{}, coreManager: manager}
+	on := service.commitConfigUpdate(&config.Config{Routing: internalconfig.RoutingConfig{Strategy: "round-robin", SessionAffinity: true}})
+	if !service.applyConfigRuntime(context.Background(), on, false) {
+		t.Fatal("enable failed")
+	}
+	affinity, ok := manager.Selector().(*coreauth.SessionAffinitySelector)
+	if !ok {
+		t.Fatal("affinity selector not active")
+	}
+	defer affinity.Stop()
+	off := service.commitConfigUpdate(&config.Config{Routing: internalconfig.RoutingConfig{Strategy: "round-robin", SessionAffinity: false}})
+	if !service.applyConfigRuntime(context.Background(), off, false) {
+		t.Fatal("disable failed")
+	}
+	if _, ok := manager.Selector().(*coreauth.RoundRobinSelector); !ok {
+		t.Fatalf("disabled selector=%T", manager.Selector())
+	}
+}
