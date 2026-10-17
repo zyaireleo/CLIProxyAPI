@@ -21,7 +21,7 @@ func TestGenerationOutcomeContract(t *testing.T) {
 		{"policy", `{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"}}`, "content_policy_block", false, false},
 		{"native policy", `{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"}}`, "", true, false},
 		{"thinking budget", `{"candidates":[{"content":{"parts":[{"thought":true,"text":"thinking"}]},"finishReason":"MAX_TOKENS"}]}`, "upstream_output_limit", false, false},
-		{"native budget", `{"candidates":[{"finishReason":"MAX_TOKENS"}]}`, "", true, false},
+		{"native budget", `{"candidates":[{"finishReason":"MAX_TOKENS"}]}`, "upstream_output_limit", true, false},
 		{"image text only", `{"candidates":[{"content":{"parts":[{"text":"cannot draw"}]}}]}`, "upstream_empty_response", false, true},
 		{"image", `{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=="}}]}}]}`, "", false, true},
 		{"invalid image", `{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"bad!"}}]}}]}`, "upstream_empty_response", false, true},

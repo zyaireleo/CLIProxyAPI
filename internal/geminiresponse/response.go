@@ -29,6 +29,8 @@ func (e *Error) IsRequestStop() bool   { return e.Stop }
 
 type Summary struct {
 	Answer, Thought, Image bool
+	Text, Tool             bool
+	Candidates             int
 	Block, Finish          string
 	ErrorStatus            int
 	ErrorMessage           string
@@ -57,6 +59,9 @@ func (s *Summary) Observe(body []byte) {
 		if code := object.Get("code"); code.Type == gjson.String {
 			s.ErrorCode = code.String()
 		}
+		if reason := object.Get("reason").String(); reason != "" {
+			s.ErrorCode = reason
+		}
 		if s.ErrorCode == "" {
 			s.ErrorCode = "upstream_error"
 		}
@@ -65,7 +70,11 @@ func (s *Summary) Observe(body []byte) {
 	if block := r.Get("promptFeedback.blockReason").String(); block != "" && block != "BLOCKED_REASON_UNSPECIFIED" {
 		s.Block = block
 	}
-	for _, candidate := range r.Get("candidates").Array() {
+	candidates := r.Get("candidates").Array()
+	if len(candidates) > s.Candidates {
+		s.Candidates = len(candidates)
+	}
+	for _, candidate := range candidates {
 		if reason := candidate.Get("finishReason").String(); reason != "" {
 			s.Finish = reason
 			switch reason {
@@ -78,11 +87,11 @@ func (s *Summary) Observe(body []byte) {
 				if part.Get("thought").Bool() {
 					s.Thought = true
 				} else {
-					s.Answer = true
+					s.Answer, s.Text = true, true
 				}
 			}
 			if strings.TrimSpace(part.Get("functionCall.name").String()) != "" {
-				s.Answer = true
+				s.Answer, s.Tool = true, true
 			}
 			for _, key := range []string{"inlineData", "inline_data"} {
 				image := part.Get(key)
@@ -113,10 +122,10 @@ func (s Summary) Failure(requireImage, native bool) error {
 		}
 		return &Error{Code: "content_policy_block", Message: "Gemini content policy blocked the response (" + s.Block + ")", Status: 400, Stop: true}
 	}
+	if s.Finish == "MALFORMED_FUNCTION_CALL" {
+		return &Error{Code: "upstream_malformed_function_call", Message: "Gemini could not generate a valid tool call (MALFORMED_FUNCTION_CALL)", Status: 502, Stop: true}
+	}
 	if !s.Answer && s.Finish == "MAX_TOKENS" {
-		if native {
-			return nil
-		}
 		return &Error{Code: "upstream_output_limit", Message: "Gemini exhausted the output budget before a final answer; increase the output limit or reduce the thinking budget", Status: 502, Stop: true}
 	}
 	if !s.Answer || (requireImage && !s.Image) {
