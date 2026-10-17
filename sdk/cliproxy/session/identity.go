@@ -3,6 +3,7 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,7 +12,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
@@ -145,15 +145,19 @@ func NormalizeExplicitID(raw string) string {
 
 // ClaudeMetadataIdentities extracts session_id, parent_session_id, and agent_id from Claude user_id metadata.
 func ClaudeMetadataIdentities(payload []byte) (sessionID, parentSessionID, agentID string) {
+	return newRequestAnalysis(payload).claudeMetadataIdentities()
+}
+
+func (a *requestAnalysis) extractClaudeMetadataIdentities() (sessionID, parentSessionID, agentID string) {
+	payload := a.payload
 	if len(payload) == 0 {
 		return "", "", ""
 	}
-	root := util.ParseGJSONBytesNoCopy(payload)
+	root, reqRoot, hasNestedReq := a.objects()
 	userID := strings.TrimSpace(root.Get("metadata.user_id").String())
 	if userID == "" {
-		req := root.Get("request")
-		if req.Exists() && !root.Get("contents").Exists() {
-			userID = strings.TrimSpace(req.Get("metadata.user_id").String())
+		if hasNestedReq {
+			userID = strings.TrimSpace(reqRoot.Get("metadata.user_id").String())
 		}
 	}
 	if userID == "" {
@@ -228,6 +232,10 @@ func DerivedID(metadata map[string]any) string {
 
 // Enrich derives a session identity once and places it in both request and option metadata.
 func Enrich(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Request, cliproxyexecutor.Options) {
+	return enrich(nil, req, opts)
+}
+
+func enrich(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Request, cliproxyexecutor.Options) {
 	payload := opts.OriginalRequest
 	if len(payload) == 0 && len(req.Payload) > 0 {
 		opts.OriginalRequest = bytes.Clone(req.Payload)
@@ -235,7 +243,8 @@ func Enrich(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (clipro
 	}
 	executionID := firstNormalizedMetadataID(cliproxyexecutor.ExecutionSessionMetadataKey, opts.Metadata, req.Metadata)
 
-	if hasExplicitSession(opts.Headers, payload) {
+	analysis := analysisFor(ctx, payload)
+	if analysis.hasExplicitSession(opts.Headers) {
 		req.Metadata = metadataWithoutKey(req.Metadata, cliproxyexecutor.DerivedSessionIDMetadataKey)
 		opts.Metadata = metadataWithoutKey(opts.Metadata, cliproxyexecutor.DerivedSessionIDMetadataKey)
 		if executionID != "" {
@@ -245,7 +254,7 @@ func Enrich(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (clipro
 			req.Metadata = metadataWithoutKey(req.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey)
 			opts.Metadata = metadataWithoutKey(opts.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey)
 		}
-		if info, ok := ExtractSessionInfo(opts.Headers, payload, opts.Metadata); ok && info.SessionID != "" {
+		if info, ok := analysis.extractInfo(opts.Headers, opts.Metadata); ok && info.SessionID != "" {
 			canonicalSessionID := BoundSessionIdentity(info.SessionID)
 			req.Metadata = metadataWithValue(req.Metadata, cliproxyexecutor.CanonicalSessionIDMetadataKey, canonicalSessionID)
 			opts.Metadata = metadataWithValue(opts.Metadata, cliproxyexecutor.CanonicalSessionIDMetadataKey, canonicalSessionID)
@@ -341,6 +350,11 @@ func Enrich(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (clipro
 }
 
 func hasExplicitSession(headers map[string][]string, payload []byte) bool {
+	return newRequestAnalysis(payload).hasExplicitSession(headers)
+}
+
+func (a *requestAnalysis) hasExplicitSession(headers map[string][]string) bool {
+	payload := a.payload
 	for _, header := range []string{
 		"X-Claude-Code-Session-Id",
 		"X-Claude-Code-Agent-Id",
@@ -385,13 +399,7 @@ func hasExplicitSession(headers map[string][]string, payload []byte) bool {
 	}
 	// Parsing without copying matters here: this runs on every request and the
 	// payload can be multiple megabytes.
-	root := util.ParseGJSONBytesNoCopy(payload)
-	reqRoot := root
-	req := root.Get("request")
-	hasNestedReq := req.Exists() && !root.Get("contents").Exists()
-	if hasNestedReq {
-		reqRoot = req
-	}
+	root, reqRoot, hasNestedReq := a.objects()
 	for _, path := range []string{
 		"session_id",
 		"sessionId",
@@ -452,7 +460,7 @@ func hasExplicitSession(headers map[string][]string, payload []byte) bool {
 			return true
 		}
 	}
-	if ClaudeMetadataSessionID(payload) != "" {
+	if sid, _, _ := a.claudeMetadataIdentities(); sid != "" {
 		return true
 	}
 	userID := strings.TrimSpace(root.Get("metadata.user_id").String())

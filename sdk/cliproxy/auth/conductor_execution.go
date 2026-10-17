@@ -122,7 +122,7 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	ctx = m.geminiAttemptContext(ctx, providers, req.Model)
-	req, opts = cliproxysession.Enrich(req, opts)
+	ctx, req, opts = cliproxysession.EnrichContext(ctx, req, opts)
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
@@ -186,7 +186,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	req, opts = cliproxysession.Enrich(req, opts)
+	ctx, req, opts = cliproxysession.EnrichContext(ctx, req, opts)
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
@@ -239,7 +239,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	ctx = m.geminiAttemptContext(ctx, providers, req.Model)
-	req, opts = cliproxysession.Enrich(req, opts)
+	ctx, req, opts = cliproxysession.EnrichContext(ctx, req, opts)
 	if m.HomeEnabled() {
 		if unlockSession := m.lockHomeWebsocketSession(ctx, opts); unlockSession != nil {
 			defer unlockSession()
@@ -361,6 +361,7 @@ func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExec
 	})
 	opts.Headers = mergeRequestHeaders(opts.Headers, resp.Headers, resp.ClearHeaders)
 	if len(resp.Body) > 0 {
+		cliproxysession.ReconcileAnalysis(ctx, resp.Body)
 		req.Payload = bytes.Clone(resp.Body)
 		opts.OriginalRequest = bytes.Clone(resp.Body)
 	}
@@ -376,7 +377,7 @@ func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExec
 		if len(evalPayload) == 0 {
 			evalPayload = req.Payload
 		}
-		info, ok := cliproxysession.ExtractSessionInfo(opts.Headers, evalPayload, opts.Metadata)
+		info, ok := cliproxysession.ExtractSessionInfoContext(ctx, opts.Headers, evalPayload, opts.Metadata)
 		if ok && info.SessionID != "" {
 			if opts.Metadata == nil {
 				opts.Metadata = make(map[string]any, 2)
@@ -393,7 +394,7 @@ func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExec
 			delete(opts.Metadata, cliproxyexecutor.LCPAffinitySessionIDMetadataKey)
 		}
 	} else if len(resp.Headers) > 0 {
-		if info, ok := cliproxysession.ExtractSessionInfo(opts.Headers, nil, opts.Metadata); ok && info.SessionID != "" {
+		if info, ok := cliproxysession.ExtractSessionInfoContext(ctx, opts.Headers, nil, opts.Metadata); ok && info.SessionID != "" {
 			if opts.Metadata == nil {
 				opts.Metadata = make(map[string]any, 2)
 			}
@@ -613,7 +614,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if len(payload) == 0 {
 				payload = execReq.Payload
 			}
-			execOpts.Metadata = ensureCanonicalSessionMetadata(execOpts.Metadata, execOpts.Headers, payload)
+			execOpts.Metadata = ensureCanonicalSessionMetadataContext(ctx, execOpts.Metadata, execOpts.Headers, payload)
 			var errIntercept error
 			execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
 			if errIntercept != nil {
@@ -876,7 +877,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			if len(payload) == 0 {
 				payload = execReq.Payload
 			}
-			execOpts.Metadata = ensureCanonicalSessionMetadata(execOpts.Metadata, execOpts.Headers, payload)
+			execOpts.Metadata = ensureCanonicalSessionMetadataContext(ctx, execOpts.Metadata, execOpts.Headers, payload)
 			var errIntercept error
 			execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
 			if errIntercept != nil {
@@ -1264,7 +1265,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		if len(payload) == 0 {
 			payload = execReq.Payload
 		}
-		execOpts.Metadata = ensureCanonicalSessionMetadata(execOpts.Metadata, execOpts.Headers, payload)
+		execOpts.Metadata = ensureCanonicalSessionMetadataContext(ctx, execOpts.Metadata, execOpts.Headers, payload)
 		execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 		if homeMode && len(models) > 1 {
 			models = models[:1]
@@ -2200,12 +2201,16 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
 }
 
 func ensureCanonicalSessionMetadata(metadata map[string]any, headers http.Header, payload []byte) map[string]any {
+	return ensureCanonicalSessionMetadataContext(nil, metadata, headers, payload)
+}
+
+func ensureCanonicalSessionMetadataContext(ctx context.Context, metadata map[string]any, headers http.Header, payload []byte) map[string]any {
 	if metadata != nil {
 		if canonicalID, ok := metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey].(string); ok && strings.TrimSpace(canonicalID) != "" {
 			return metadata
 		}
 	}
-	canonicalID := CanonicalSessionID(headers, payload, metadata)
+	canonicalID := canonicalSessionIDContext(ctx, headers, payload, metadata)
 	if canonicalID == "" {
 		return metadata
 	}
