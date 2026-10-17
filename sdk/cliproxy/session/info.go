@@ -53,18 +53,18 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 		}
 	}
 
-	var root gjson.Result
-	var reqRoot gjson.Result
+	var root indexedSessionObject
+	var reqRoot indexedSessionObject
 	var hasNestedReq bool
 	var parentCandidate string
 
 	if len(payload) > 0 {
-		root = util.ParseGJSONBytesNoCopy(payload)
+		root = indexSessionObject(util.ParseGJSONBytesNoCopy(payload))
 		reqRoot = root
 		req := root.Get("request")
 		hasNestedReq = req.Exists() && !root.Get("contents").Exists()
 		if hasNestedReq {
-			reqRoot = req
+			reqRoot = indexSessionObject(req)
 		}
 		for _, p := range []string{
 			// Standard session / thread parent keys
@@ -843,7 +843,7 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 	return SessionInfo{}, false
 }
 
-func isBodyForkCandidate(root, reqRoot gjson.Result, hasNestedReq bool) bool {
+func isBodyForkCandidate(root, reqRoot indexedSessionObject, hasNestedReq bool) bool {
 	if !root.Exists() {
 		return false
 	}
