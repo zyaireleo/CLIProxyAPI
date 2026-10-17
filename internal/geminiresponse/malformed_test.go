@@ -31,3 +31,11 @@ func TestSummarySeparatesTextThinkingAndToolWithoutRetainingContent(t *testing.T
 		t.Fatal("valid tool call incorrectly rejected")
 	}
 }
+
+func TestNativeErrorRetainsMachineReason(t *testing.T) {
+	var summary Summary
+	summary.Observe([]byte(`{"error":{"code":502,"status":"INTERNAL","reason":"upstream_empty_response","message":"no usable content"}}`))
+	if summary.ErrorCode != "upstream_empty_response" {
+		t.Fatalf("lost semantic code: %s", summary.ErrorCode)
+	}
+}

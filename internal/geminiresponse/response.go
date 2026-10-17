@@ -59,6 +59,9 @@ func (s *Summary) Observe(body []byte) {
 		if code := object.Get("code"); code.Type == gjson.String {
 			s.ErrorCode = code.String()
 		}
+		if reason := object.Get("reason").String(); reason != "" {
+			s.ErrorCode = reason
+		}
 		if s.ErrorCode == "" {
 			s.ErrorCode = "upstream_error"
 		}
