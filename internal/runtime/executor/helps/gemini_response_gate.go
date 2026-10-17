@@ -19,7 +19,7 @@ func NewGeminiResponseGate(native, requireImage bool) *GeminiResponseGate {
 }
 func (g *GeminiResponseGate) Observe(payload []byte) ([][]byte, error) {
 	g.Summary.Observe(payload)
-	if g.Summary.ErrorStatus != 0 || (g.Summary.Block != "" && !g.native) || (g.Summary.Finish == "MAX_TOKENS" && !g.Summary.Answer && !g.native) {
+	if g.Summary.Finish == "MALFORMED_FUNCTION_CALL" || g.Summary.ErrorStatus != 0 || (g.Summary.Block != "" && !g.native) || (g.Summary.Finish == "MAX_TOKENS" && !g.Summary.Answer) {
 		return nil, g.Summary.Failure(g.requireImage, g.native)
 	}
 	if g.started || g.Summary.Answer || g.Summary.Thought || (g.native && g.Summary.Block != "") {
