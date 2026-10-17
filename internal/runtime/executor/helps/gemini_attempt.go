@@ -36,6 +36,14 @@ func ObserveGeminiContent(reporter *UsageReporter, payload []byte) {
 	}
 	reporter.ttftMu.Lock()
 	reporter.geminiAnswer = reporter.geminiAnswer || summary.Answer
+	reporter.geminiThought = reporter.geminiThought || summary.Thought
+	reporter.geminiText = reporter.geminiText || summary.Text
+	reporter.geminiTool = reporter.geminiTool || summary.Tool
+	reporter.geminiImage = reporter.geminiImage || summary.Image
+	if summary.Candidates > reporter.geminiCandidates {
+		reporter.geminiCandidates = summary.Candidates
+	}
+
 	reporter.geminiPolicyBlocked = reporter.geminiPolicyBlocked || summary.Block != ""
 	if termination != "" {
 		reporter.geminiTermination = termination
@@ -116,6 +124,7 @@ func LogGeminiOutcome(ctx context.Context, model string, err error, reporters ..
 	}
 	firstContentMS := int64(-1)
 	termination := code
+	structure := log.Fields{}
 	if len(reporters) > 0 && reporters[0] != nil {
 		reporters[0].ttftMu.RLock()
 		if reason := reporters[0].geminiTermination; reason != "" {
@@ -128,6 +137,11 @@ func LogGeminiOutcome(ctx context.Context, model string, err error, reporters ..
 				code = "upstream_output_limit"
 			}
 		}
+		structure["text_present"] = reporters[0].geminiText
+		structure["thought_present"] = reporters[0].geminiThought
+		structure["tool_present"] = reporters[0].geminiTool
+		structure["image_present"] = reporters[0].geminiImage
+		structure["candidate_count"] = reporters[0].geminiCandidates
 		reporters[0].ttftMu.RUnlock()
 	}
 	if code == "success" && !sampleGeminiSuccess(ctx) {
@@ -143,5 +157,5 @@ func LogGeminiOutcome(ctx context.Context, model string, err error, reporters ..
 		"sub2api_trace_id": logging.GetSub2APITraceID(ctx),
 		"attempts":         geminiresponse.Attempts(ctx), "outcome": code,
 		"source": "upstream", "first_content_ms": firstContentMS, "termination_reason": termination,
-	}).Info("gemini_generation_outcome")
+	}).WithFields(structure).Info("gemini_generation_outcome")
 }

@@ -256,19 +256,19 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			requireImage := e.cfg != nil && e.cfg.AntigravityGeminiMaxAttempts > 0 && antigravityImageModelName(baseModel) && !antigravityImageOutputDisabled(originalPayload)
 			gate = helps.NewGeminiResponseGate(responseFormat == sdktranslator.FormatGemini, requireImage)
 		}
+		var geminiUsage helps.StreamUsageBuffer
 		emitFailure := func(failure error) {
 			geminiresponse.SaveFailure(ctx, failure)
 			helps.LogGeminiOutcome(ctx, baseModel, failure, reporter)
-			reporter.PublishFailure(ctx, failure)
+			if !geminiUsage.PublishFailure(ctx, reporter, failure) {
+				reporter.PublishFailure(ctx, failure)
+			}
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: failure}:
 			case <-ctx.Done():
 			}
 		}
 		emitPayload := func(payload []byte) bool {
-			if strings.HasPrefix(baseModel, "gemini") {
-				helps.ObserveGeminiContent(reporter, payload)
-			}
 			payload = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, payload)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(payload), &param, claudeInputTokens)
 			for _, chunk := range chunks {
@@ -296,9 +296,16 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 				continue
 			}
 			reporter.ObserveResponseModel(payload)
+			if gate != nil {
+				helps.ObserveGeminiContent(reporter, payload)
+			}
 
 			if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
-				reporter.Publish(ctx, detail)
+				if gate != nil {
+					geminiUsage.Observe(detail, true)
+				} else {
+					reporter.Publish(ctx, detail)
+				}
 			}
 
 			payloads := [][]byte{payload}
@@ -318,7 +325,12 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
+			if gate != nil {
+				helps.LogGeminiOutcome(ctx, baseModel, errScan, reporter)
+			}
+			if !geminiUsage.PublishFailure(ctx, reporter, errScan) {
+				reporter.PublishFailure(ctx, errScan)
+			}
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
@@ -350,6 +362,9 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			}
 			if replayAccumulator != nil {
 				replayAccumulator.Commit(ctx)
+			}
+			if gate != nil {
+				geminiUsage.Publish(ctx, reporter)
 			}
 			reporter.EnsurePublished(ctx)
 		}
