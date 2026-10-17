@@ -205,6 +205,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.syncPluginModelRuntime(ctx)
 	}
 
+	s.startAntigravityCatalogRefresh(ctx)
 	s.registerModelRefreshCallback()
 
 	select {
@@ -231,6 +232,11 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 	var shutdownErr error
 	s.shutdownOnce.Do(func() {
+		s.agCatalogMu.Lock()
+		if s.agCatalogCancel != nil {
+			s.agCatalogCancel()
+		}
+		s.agCatalogMu.Unlock()
 		if ctx == nil {
 			ctx = context.Background()
 		}

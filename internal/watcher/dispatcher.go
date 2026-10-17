@@ -135,7 +135,7 @@ func (w *Watcher) dispatchPersistedAuthUpdateWithRevision(update *AuthUpdate) (b
 	return true, rev
 }
 
-func (w *Watcher) refreshAuthState(force bool) {
+func (w *Watcher) refreshAuthState(force bool, forceProviders ...string) {
 	w.clientsMutex.Lock()
 	w.activeAuthScans++
 	cfg := w.config
@@ -175,12 +175,12 @@ func (w *Watcher) refreshAuthState(force bool) {
 			}
 		}
 	}
-	updates := w.prepareAuthUpdatesLocked(auths, force)
+	updates := w.prepareAuthUpdatesLocked(auths, force, forceProviders...)
 	w.clientsMutex.Unlock()
 	w.dispatchAuthUpdates(updates)
 }
 
-func (w *Watcher) prepareAuthUpdatesLocked(auths []*coreauth.Auth, force bool) []AuthUpdate {
+func (w *Watcher) prepareAuthUpdatesLocked(auths []*coreauth.Auth, force bool, forceProviders ...string) []AuthUpdate {
 	newState := make(map[string]*coreauth.Auth, len(auths))
 	orderedIDs := make([]string, 0, len(auths))
 	for _, auth := range auths {
@@ -200,7 +200,7 @@ func (w *Watcher) prepareAuthUpdatesLocked(auths []*coreauth.Auth, force bool) [
 		}
 		if existing, ok := w.currentAuths[id]; !ok {
 			updates = append(updates, AuthUpdate{Action: AuthUpdateActionAdd, ID: id, Auth: auth.Clone()})
-		} else if force || !authEqual(existing, auth) {
+		} else if force || providerForced(auth.Provider, forceProviders) || !authEqual(existing, auth) {
 			updates = append(updates, AuthUpdate{Action: AuthUpdateActionModify, ID: id, Auth: auth.Clone()})
 		}
 	}
@@ -385,4 +385,13 @@ func snapshotCoreAuths(cfg *config.Config, authDir string, parser synthesizer.Pl
 	}
 
 	return out
+}
+
+func providerForced(provider string, providers []string) bool {
+	for _, p := range providers {
+		if provider == p {
+			return true
+		}
+	}
+	return false
 }

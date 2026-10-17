@@ -26,6 +26,9 @@ import (
 // It manages the complete lifecycle including authentication, file watching, HTTP server,
 // and integration with various AI service providers.
 type Service struct {
+	agCatalogMu     sync.Mutex
+	agCatalogs      map[string]*antigravityCatalogState
+	agCatalogCancel context.CancelFunc
 	// cfg holds the current application configuration.
 	cfg *config.Config
 

@@ -139,6 +139,10 @@ func (w *Watcher) reloadConfig() bool {
 	forceAuthRefresh := oldConfig != nil && (oldConfig.ForceModelPrefix != newConfig.ForceModelPrefix || !reflect.DeepEqual(oldConfig.OAuthModelAlias, newConfig.OAuthModelAlias) || retryConfigChanged)
 
 	log.Infof("config successfully reloaded, triggering client reload")
-	w.reloadClients(authDirChanged, affectedOAuthProviders, forceAuthRefresh)
+	var forceProviders []string
+	if oldConfig != nil && !reflect.DeepEqual(oldConfig.AntigravityModels, newConfig.AntigravityModels) {
+		forceProviders = []string{"antigravity"}
+	}
+	w.reloadClients(authDirChanged, affectedOAuthProviders, forceAuthRefresh, forceProviders...)
 	return true
 }

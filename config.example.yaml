@@ -1015,3 +1015,12 @@ nonstream-keepalive-interval: 0
 #         - 'tools.#(name=="apply_patch")'
 #         # Nested additional_tools structure in input[] (Codex CLI >= 0.154 "Responses Lite"):
 #         - 'input.#(type=="additional_tools")#.tools.#(name=="functions")#.tools.#(name=="apply_patch")#'
+# Account-scoped Antigravity catalogs, independent of --local-model.
+antigravity-models:
+  discovery-enabled: false
+  refresh-interval: 3h
+  additional-models: []
+  # - id: actual-upstream-model-id
+  #   display-name: My model
+  #   auth-ids: [stable-auth-id] # Omit to apply to all Antigravity accounts.
+# Use oauth-model-alias for client-visible aliases of additional models.

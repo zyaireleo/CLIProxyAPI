@@ -70,6 +70,10 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	if ctx.Err() != nil {
 		return
 	}
+	if provider == "antigravity" {
+		s.registerAntigravityCatalog(ctx, a)
+		return
+	}
 	var models []*ModelInfo
 	switch provider {
 	case constant.Gemini:
@@ -311,7 +315,8 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 //
 // Re-registration is deliberate: registry cooldown/suspension state is treated
 // as part of the previous registration snapshot and is cleared when the auth is
-// rebound to the refreshed model catalog.
+// rebound to the refreshed model catalog. Antigravity catalogs preserve these
+// states through their dedicated registration path.
 func (s *Service) refreshModelRegistrationForAuth(current *coreauth.Auth) bool {
 	return s.refreshModelRegistrationForAuthWithContext(context.Background(), current, nil)
 }

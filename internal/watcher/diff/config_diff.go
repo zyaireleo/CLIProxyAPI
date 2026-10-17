@@ -18,6 +18,10 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		return changes
 	}
 
+	if !reflect.DeepEqual(oldCfg.AntigravityModels, newCfg.AntigravityModels) {
+		changes = append(changes, "antigravity-models: updated")
+	}
+
 	// Simple scalars
 	if oldCfg.Port != newCfg.Port {
 		changes = append(changes, fmt.Sprintf("port: %d -> %d", oldCfg.Port, newCfg.Port))
