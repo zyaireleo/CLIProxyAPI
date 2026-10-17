@@ -22,7 +22,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string, forceAuthRefresh bool) {
+func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string, forceAuthRefresh bool, forceProviders ...string) {
 	log.Debugf("starting full client load process")
 
 	w.clientsMutex.RLock()
@@ -146,7 +146,7 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 		w.reloadCallback(cfg)
 	}
 
-	w.refreshAuthState(forceAuthRefresh)
+	w.refreshAuthState(forceAuthRefresh, forceProviders...)
 	redisqueue.NotifyUsageRefresh()
 
 	log.Infof("full client load complete - %d clients (%d auth files + %d Gemini API keys + %d Vertex API keys + %d Claude API keys + %d Codex keys + %d xAI keys + %d Meta API keys + %d OpenAI-compat)",

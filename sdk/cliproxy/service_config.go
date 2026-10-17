@@ -109,6 +109,10 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 	if newCfg == nil {
 		return configCommit{}
 	}
+	if errValidate := newCfg.AntigravityModels.Validate(); errValidate != nil {
+		log.WithError(errValidate).Warn("rejected invalid antigravity model config")
+		return configCommit{}
+	}
 	if errValidate := newCfg.ValidateCredentialWeights(); errValidate != nil {
 		log.WithError(errValidate).Warn("rejected config update with invalid credential weights")
 		return configCommit{}

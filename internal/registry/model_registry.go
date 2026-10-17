@@ -417,6 +417,17 @@ func (r *ModelRegistry) triggerModelsUnregistered(provider, clientID string) {
 func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models []*ModelInfo) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
+	r.registerClientLocked(clientID, clientProvider, models, false)
+}
+
+// RegisterClientPreservingState publishes a catalog without clearing cooldowns.
+func (r *ModelRegistry) RegisterClientPreservingState(clientID, provider string, models []*ModelInfo) {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	r.registerClientLocked(clientID, provider, models, true)
+}
+
+func (r *ModelRegistry) registerClientLocked(clientID, clientProvider string, models []*ModelInfo, preserve bool) {
 	r.ensureAvailableModelsCacheLocked()
 
 	if r.clientGenerations == nil {
@@ -598,10 +609,10 @@ func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models [
 			// Re-registering an existing client/model binding starts a fresh registry
 			// snapshot for that binding. Cooldown and suspension are transient
 			// scheduling state and must not survive this reconciliation step.
-			if reg.QuotaExceededClients != nil {
+			if !preserve && reg.QuotaExceededClients != nil {
 				delete(reg.QuotaExceededClients, clientID)
 			}
-			if reg.SuspendedClients != nil {
+			if !preserve && reg.SuspendedClients != nil {
 				delete(reg.SuspendedClients, clientID)
 			}
 			if providerChanged && provider != "" {

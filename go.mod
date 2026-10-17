@@ -28,6 +28,7 @@ require (
 	github.com/refraction-networking/utls v1.8.2
 	github.com/sirupsen/logrus v1.9.3
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
+	github.com/stretchr/testify v1.11.1
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
 	github.com/tiktoken-go/tokenizer v0.8.1
@@ -44,6 +45,7 @@ require (
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dlclark/regexp2/v2 v2.5.1 // indirect
 	github.com/miekg/dns v1.1.43 // indirect
 	github.com/pion/datachannel v1.6.2 // indirect
@@ -56,6 +58,7 @@ require (
 	github.com/pion/srtp/v3 v3.0.12 // indirect
 	github.com/pion/transport/v4 v4.0.2 // indirect
 	github.com/pion/turn/v5 v5.0.12 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rogpeppe/go-internal v1.15.0 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
