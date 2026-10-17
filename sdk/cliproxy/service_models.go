@@ -146,9 +146,9 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			models = registry.GetCodexProModels()
 		case "plus":
 			models = registry.GetCodexPlusModels()
-		case "team", "business", "go":
+		case "team", "business":
 			models = registry.GetCodexTeamModels()
-		case "free":
+		case "free", "go":
 			models = registry.GetCodexFreeModels()
 		default:
 			models = registry.GetCodexProModels()

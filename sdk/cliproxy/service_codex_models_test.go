@@ -96,6 +96,36 @@ func TestRegisterModelsForAuthCodexAPIKeyModels(t *testing.T) {
 	}
 }
 
+func TestRegisterCodexOAuthCurrentCatalogByPlan(t *testing.T) {
+	for _, plan := range []string{"free", "go", "plus", "pro", "team", "business"} {
+		t.Run(plan, func(t *testing.T) {
+			authID := "codex-current-oauth-" + plan
+			modelRegistry := internalregistry.GetGlobalRegistry()
+			t.Cleanup(func() { modelRegistry.UnregisterClient(authID) })
+			service := &Service{cfg: &config.Config{}}
+			service.registerModelsForAuth(context.Background(), &coreauth.Auth{
+				ID: authID, Provider: "codex", Status: coreauth.StatusActive,
+				Attributes: map[string]string{"plan_type": plan},
+			})
+			ids := codexModelIDSet(modelRegistry.GetModelsForClient(authID))
+			if _, ok := ids["gpt-6-luna"]; !ok {
+				t.Fatal("current Luna model was not registered")
+			}
+			for _, id := range []string{"gpt-6.1-sol", "gpt-6-sol"} {
+				_, present := ids[id]
+				if want := plan != "free" && plan != "go"; present != want {
+					t.Errorf("model %q registered=%v for plan %q, want %v", id, present, plan, want)
+				}
+			}
+			for _, id := range []string{"gpt-5.5", "gpt-5.3-codex-spark"} {
+				if _, present := ids[id]; present {
+					t.Errorf("retired OAuth model %q was registered", id)
+				}
+			}
+		})
+	}
+}
+
 func TestRegisterModelsForAuthCodexAPIKeyDefaultRequiresConfigMatch(t *testing.T) {
 	defaultIDs := codexModelIDSet(internalregistry.GetCodexProModels())
 	tests := []struct {
