@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/geminiresponse"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -492,6 +493,11 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 		parentCtx = logging.WithSub2APITraceID(parentCtx, logging.GetSub2APITraceID(requestCtx))
 	}
 	newCtx, cancel := context.WithCancel(parentCtx)
+	if c != nil && c.Request != nil && c.GetHeader("X-Sub2API-Audit-Hop") == "strict_v1" {
+		// Share one generation attempt across credential rotation, retry rounds,
+		// and stream bootstrap retries for this audit HTTP request only.
+		newCtx = geminiresponse.WithBudget(newCtx, 1)
+	}
 
 	endpoint := ""
 	if c != nil && c.Request != nil {
