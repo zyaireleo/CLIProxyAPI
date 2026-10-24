@@ -24,8 +24,10 @@ jobs:
         run: bash deploy/216/test-deploy.sh
       - name: Test
         run: CGO_ENABLED=1 go test ./...
+      - name: Unix late-callback regression
+        run: CGO_ENABLED=1 go test ./internal/pluginhost -run '^TestUnixNative' -count=10 -timeout=5m
       - name: Native quota race regressions
-        run: CGO_ENABLED=1 go test -race ./internal/nativequota ./sdk/cliproxy/auth ./internal/pluginhost ./internal/api/handlers/management ./sdk/cliproxy ./test -run 'NativeQuota|Admission|Collector|Snapshot|Quota.*Ownership|StopPlugin' -count=1 -timeout=10m
+        run: CGO_ENABLED=1 go test -race ./internal/nativequota ./sdk/cliproxy/auth ./internal/pluginhost ./internal/api/handlers/management ./sdk/cliproxy ./test -run 'NativeQuota|Admission|Collector|Snapshot|Quota.*Ownership|StopPlugin|UnixNative' -count=1 -timeout=10m
       - name: Native quota page DOM tests
         run: node --test internal/api/handlers/management/native_quota_assets/native_quota_dom_test.cjs
       - name: Build reviewed Linux candidate

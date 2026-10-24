@@ -52,10 +52,6 @@ static const char* cliproxy_dlerror(void) {
 	return dlerror();
 }
 
-static int cliproxy_dlclose(void* handle) {
-	return dlclose(handle);
-}
-
 static int cliproxy_call_init(void* fn, const cliproxy_host_api* host, cliproxy_plugin_api* plugin) {
 	return ((cliproxy_plugin_init_fn)fn)(host, plugin);
 }
@@ -91,17 +87,22 @@ import (
 )
 
 var (
-	hostCallbackID      atomic.Uintptr
-	hostCallbackEntries sync.Map
+	hostCallbackID        atomic.Uintptr
+	hostCallbackEntries   sync.Map // immutable C context pointer -> *unixHostCallbackEntry
+	pinnedNativeLibraries sync.Map // dlopen handle -> struct{}, retained until process exit
 )
 
 type dynamicLibraryLoader struct{}
 
 type dynamicLibraryClient struct {
-	handle  unsafe.Pointer
-	hostAPI *C.cliproxy_host_api
-	hostCtx unsafe.Pointer
-	api     C.cliproxy_plugin_api
+	handle       unsafe.Pointer
+	hostAPI      *C.cliproxy_host_api
+	hostCtx      unsafe.Pointer
+	api          C.cliproxy_plugin_api
+	callbacks    *unixHostCallbackEntry
+	calls        sync.RWMutex
+	closed       atomic.Bool
+	shutdownOnce sync.Once
 }
 
 func defaultPluginLoader() pluginLoader {
@@ -116,35 +117,40 @@ func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, err
 	if handle == nil {
 		return nil, fmt.Errorf("dlopen %s: %s", file.Path, dlerrorString())
 	}
+	// Even a failed init may leave native threads or a Go runtime running.
+	// Never dlclose a successful dlopen, including the failure paths below.
+	// Reinitializing the same mapping could give its old workers a new host API.
+	if _, loaded := pinnedNativeLibraries.LoadOrStore(handle, struct{}{}); loaded {
+		return nil, fmt.Errorf("native plugin %s is already mapped; restart required to reload the same library", file.Path)
+	}
 
 	cSymbol := C.CString("cliproxy_plugin_init")
 	initSymbol := C.cliproxy_dlsym(handle, cSymbol)
 	C.free(unsafe.Pointer(cSymbol))
 	if initSymbol == nil {
-		C.cliproxy_dlclose(handle)
 		return nil, fmt.Errorf("missing cliproxy_plugin_init: %s", dlerrorString())
 	}
 
 	hostAPI := (*C.cliproxy_host_api)(C.malloc(C.size_t(unsafe.Sizeof(C.cliproxy_host_api{}))))
 	if hostAPI == nil {
-		C.cliproxy_dlclose(handle)
 		return nil, fmt.Errorf("allocate host api")
 	}
 	hostCtx := C.malloc(C.size_t(unsafe.Sizeof(C.uintptr_t(0))))
 	if hostCtx == nil {
 		C.free(unsafe.Pointer(hostAPI))
-		C.cliproxy_dlclose(handle)
 		return nil, fmt.Errorf("allocate host context")
 	}
 	id := hostCallbackID.Add(1)
 	*(*C.uintptr_t)(hostCtx) = C.uintptr_t(id)
-	hostCallbackEntries.Store(id, dynamicHostCallbackEntry{host: host, pluginID: file.ID, callbacks: file.callbacks})
+	entry := &unixHostCallbackEntry{dynamicHostCallbackEntry: dynamicHostCallbackEntry{host: host, pluginID: file.ID, callbacks: file.callbacks}}
+	hostCallbackEntries.Store(hostCtx, entry)
 	C.cliproxy_set_host_api(hostAPI, C.uint32_t(pluginHostABIVersion), hostCtx)
 
 	client := &dynamicLibraryClient{
-		handle:  handle,
-		hostAPI: hostAPI,
-		hostCtx: hostCtx,
+		handle:    handle,
+		hostAPI:   hostAPI,
+		hostCtx:   hostCtx,
+		callbacks: entry,
 	}
 	rc := C.cliproxy_call_init(initSymbol, hostAPI, &client.api)
 	if rc != 0 {
@@ -163,7 +169,12 @@ func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, err
 }
 
 func (c *dynamicLibraryClient) Call(ctx context.Context, method string, request []byte) ([]byte, error) {
-	if c == nil || c.api.call == nil {
+	if c == nil {
+		return nil, fmt.Errorf("plugin client is closed")
+	}
+	c.calls.RLock()
+	defer c.calls.RUnlock()
+	if c.closed.Load() || c.api.call == nil {
 		return nil, fmt.Errorf("plugin client is closed")
 	}
 	if ctx != nil {
@@ -203,24 +214,28 @@ func (c *dynamicLibraryClient) Shutdown() {
 	if c == nil {
 		return
 	}
-	if c.api.shutdown != nil {
-		C.cliproxy_shutdown_plugin(c.api.shutdown)
-		c.api.shutdown = nil
-	}
-	if c.hostCtx != nil {
-		id := uintptr(*(*C.uintptr_t)(c.hostCtx))
-		hostCallbackEntries.Delete(id)
-		C.free(c.hostCtx)
-		c.hostCtx = nil
-	}
-	if c.hostAPI != nil {
-		C.free(unsafe.Pointer(c.hostAPI))
-		c.hostAPI = nil
-	}
-	if c.handle != nil {
-		C.cliproxy_dlclose(c.handle)
-		c.handle = nil
-	}
+	c.shutdownOnce.Do(func() {
+		c.closed.Store(true)
+		// Revoke admission before invoking plugin code, including callbacks made
+		// synchronously by shutdown itself. Loaded entries also check detachment.
+		if c.callbacks != nil {
+			c.callbacks.detach()
+		}
+		hostCallbackEntries.Delete(c.hostCtx)
+		c.calls.Lock()
+		defer c.calls.Unlock()
+		if c.api.shutdown != nil {
+			C.cliproxy_shutdown_plugin(c.api.shutdown)
+		}
+		// Shutdown may cancel workers needed to unblock an admitted callback.
+		// Only acknowledge after those callbacks can no longer mutate host state.
+		if c.callbacks != nil {
+			c.callbacks.active.Wait()
+		}
+		// This is logical detachment, not proof that native/Go workers exited.
+		// Keep the module, hostAPI and hostCtx mapped/allocated until process exit,
+		// including after failed init. Late callbacks/free_buffer calls stay safe.
+	})
 }
 
 func dlerrorString() string {
