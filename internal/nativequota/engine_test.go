@@ -54,6 +54,55 @@ func TestConfigDefaultsValidationAndDefensiveCopies(t *testing.T) {
 	}
 }
 
+func TestConfigureNormalizedEqualityAndProviderCoverage(t *testing.T) {
+	e := New(Config{}, nil)
+	for _, tc := range []struct {
+		name    string
+		cfg     Config
+		changed bool
+	}{
+		{"explicit_defaults", DefaultConfig(), false},
+		{"implicit_defaults", Config{}, false},
+		{"empty_providers", Config{Providers: []string{}}, true},
+		{"same_empty_providers", Config{Providers: []string{}}, false},
+		{"nil_restores_defaults", Config{}, true},
+		{"same_restored_defaults", DefaultConfig(), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			epoch, changed := e.epoch, e.changed
+			if err := e.Configure(tc.cfg); err != nil {
+				t.Fatal(err)
+			}
+			if (e.epoch != epoch) != tc.changed || (e.changed != changed) != tc.changed {
+				t.Fatal("unexpected configuration invalidation")
+			}
+			woke := false
+			select {
+			case <-e.wake:
+				woke = true
+			default:
+			}
+			if woke != tc.changed {
+				t.Fatal("unexpected scheduler wakeup")
+			}
+			cfg := e.Config()
+			wantProviders := len(tc.cfg.normalized().Providers)
+			if cfg.Providers == nil || len(cfg.Providers) != wantProviders {
+				t.Fatal("provider coverage changed during normalization")
+			}
+			if len(tc.cfg.Providers) > 0 {
+				tc.cfg.Providers[0] = "caller_mutation"
+			}
+			if len(cfg.Providers) > 0 {
+				cfg.Providers[0] = "copy_mutation"
+				if e.Config().Providers[0] != ProviderAntigravity {
+					t.Fatal("config providers aliased")
+				}
+			}
+		})
+	}
+}
+
 func TestObserveOrderingCopiesUnknownAndExactModels(t *testing.T) {
 	e := testEngine(t, ProviderAntigravity, nil)
 	at := time.Now().Add(-time.Second)

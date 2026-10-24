@@ -82,7 +82,7 @@ func legacyQuotaProvider(id string) string {
 }
 
 func legacyQuotaPlugins(providers []string) []string {
-	antigravity, codex := len(providers) == 0, len(providers) == 0
+	antigravity, codex := providers == nil, providers == nil
 	for _, provider := range providers {
 		switch strings.ToLower(strings.TrimSpace(provider)) {
 		case "antigravity":

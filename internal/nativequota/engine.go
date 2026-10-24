@@ -2,6 +2,7 @@ package nativequota
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -78,6 +79,18 @@ func (e *Engine) Configure(cfg Config) error {
 	e.persistMu.Lock()
 	defer e.persistMu.Unlock()
 	e.mu.Lock()
+	// Management apply and watcher reload may publish the same effective config.
+	// Preserve in-flight reads and their deadlines when nothing has changed.
+	if e.cfg.Mode == cfg.Mode && slices.Equal(e.cfg.Providers, cfg.Providers) &&
+		e.cfg.RefreshConcurrency == cfg.RefreshConcurrency &&
+		e.cfg.AntigravityInterval == cfg.AntigravityInterval &&
+		e.cfg.CodexInterval == cfg.CodexInterval &&
+		e.cfg.RefreshMinInterval == cfg.RefreshMinInterval &&
+		e.cfg.MaxWait == cfg.MaxWait && e.cfg.MaxInFlight == cfg.MaxInFlight &&
+		e.cfg.UnknownMaxInFlight == cfg.UnknownMaxInFlight && e.cfg.QueueLimit == cfg.QueueLimit {
+		e.mu.Unlock()
+		return nil
+	}
 	e.cfg = cfg
 	e.epoch++
 	for _, s := range e.accounts {

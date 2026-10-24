@@ -250,6 +250,83 @@ func TestCollectorRestartHonorsMinimumInterval(t *testing.T) {
 	}
 }
 
+func TestCollectorConfigureInFlight(t *testing.T) {
+	for _, provider := range []string{ProviderAntigravity, ProviderCodex} {
+		for _, change := range []string{"same", "normalized_defaults", "changed_mode"} {
+			t.Run(provider+"/"+change, func(t *testing.T) {
+				started := make(chan context.Context, 1)
+				finish := make(chan struct{})
+				var calls atomic.Int32
+				e := New(DefaultConfig(), func(ctx context.Context, a Account) (Observation, error) {
+					calls.Add(1)
+					started <- ctx
+					select {
+					case <-finish:
+					case <-ctx.Done():
+					}
+					// Even a successful late response must be rejected after a real change.
+					return observation(a.ID, a.Provider, time.Now(), 0.8), nil
+				})
+				e.SetAccounts([]Account{{ID: "a", Provider: provider}})
+				e.Start(context.Background())
+				defer stopEngine(t, e)
+				cfg := e.Config()
+				cfg.Mode = ModeEnforce
+				if err := e.Configure(cfg); err != nil {
+					t.Fatal(err)
+				}
+				var fetchCtx context.Context
+				select {
+				case fetchCtx = <-started:
+				case <-time.After(time.Second):
+					t.Fatal("collector did not start after enabling")
+				}
+				e.mu.Lock()
+				epoch, changed, due := e.epoch, e.changed, e.accounts["a"].nextDue
+				e.mu.Unlock()
+				switch change {
+				case "normalized_defaults":
+					cfg = Config{Mode: ModeEnforce}
+				case "changed_mode":
+					cfg.Mode = ModeShadow
+				}
+				// Reproduce the second apply from the config reload while Fetch is blocked.
+				if err := e.Configure(cfg); err != nil {
+					t.Fatal(err)
+				}
+				if change == "changed_mode" {
+					if fetchCtx.Err() != context.Canceled {
+						t.Error("changed mode did not cancel the old fetch")
+					}
+				} else {
+					if err := fetchCtx.Err(); err != nil {
+						t.Errorf("identical configuration canceled the fetch: %v", err)
+					}
+					e.mu.Lock()
+					unchanged := e.epoch == epoch && e.changed == changed && e.accounts["a"].nextDue.Equal(due)
+					e.mu.Unlock()
+					if !unchanged {
+						t.Error("identical configuration changed epoch, notification, or deadline")
+					}
+				}
+				close(finish)
+				waitFor(t, func() bool { e.mu.Lock(); defer e.mu.Unlock(); return e.active == 0 })
+				v := e.AssessSummary("a", provider, "", time.Now())
+				if change == "changed_mode" {
+					if !v.ObservedAt.IsZero() {
+						t.Fatal("old configuration's successful result was applied")
+					}
+				} else if v.State != "ready" || v.ObservedAt.IsZero() || v.RefreshFailed {
+					t.Fatalf("identical configuration discarded successful fetch: %+v", v)
+				}
+				if calls.Load() != 1 {
+					t.Fatalf("configuration triggered another fetch: %d", calls.Load())
+				}
+			})
+		}
+	}
+}
+
 func TestCollectorCancelsRetiredConfigurationAndAccount(t *testing.T) {
 	for _, change := range []string{"off", "provider_removed", "revision", "disabled", "removed"} {
 		t.Run(change, func(t *testing.T) {

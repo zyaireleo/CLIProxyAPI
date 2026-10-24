@@ -127,13 +127,18 @@ func (cfg *Config) ValidateNativeQuota() error {
 	if !cfg.Plugins.Enabled {
 		return nil
 	}
+	covered := make(map[string]bool, len(r.Providers))
+	for _, provider := range r.Providers {
+		covered[provider] = true
+	}
 	for id, plugin := range cfg.Plugins.Configs {
 		if plugin.Enabled == nil || !*plugin.Enabled {
 			continue
 		}
 		key := strings.ToLower(strings.TrimSpace(id))
-		provider := strings.Contains(key, "antigravity") || strings.Contains(key, "codex") || strings.HasPrefix(key, "ag-")
-		if key == "antigravity-priority" || (provider && (strings.Contains(key, "quota") || strings.Contains(key, "schedul"))) {
+		antigravityOwner := covered["antigravity"] && (strings.Contains(key, "antigravity") || strings.HasPrefix(key, "ag-"))
+		codexOwner := covered["codex"] && strings.Contains(key, "codex")
+		if (key == "antigravity-priority" && antigravityOwner) || ((antigravityOwner || codexOwner) && (strings.Contains(key, "quota") || strings.Contains(key, "schedul"))) {
 			return fmt.Errorf("native-quota enforce conflicts with enabled plugin %q; explicit handoff is required", id)
 		}
 	}

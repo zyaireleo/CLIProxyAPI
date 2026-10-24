@@ -83,6 +83,27 @@ func TestNativeQuotaConfigRejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestNativeQuotaConfigConflictsAreProviderScoped(t *testing.T) {
+	on := true
+	for _, test := range []struct {
+		providers []string
+		plugin    string
+		conflict  bool
+	}{
+		{[]string{"antigravity"}, "codex-quota-scheduler", false},
+		{[]string{"codex"}, "antigravity-priority", false},
+		{[]string{"antigravity"}, "antigravity-priority", true},
+		{[]string{"codex"}, "codex-quota-scheduler", true},
+		{[]string{}, "antigravity-priority", false},
+		{nil, "antigravity-priority", true},
+	} {
+		cfg := &Config{NativeQuota: NativeQuotaConfig{Mode: "enforce", Providers: test.providers}, Plugins: PluginsConfig{Enabled: true, Configs: map[string]PluginInstanceConfig{test.plugin: {Enabled: &on}}}}
+		if got := cfg.ValidateNativeQuota() != nil; got != test.conflict {
+			t.Fatalf("providers=%#v plugin=%s conflict=%v, want %v", test.providers, test.plugin, got, test.conflict)
+		}
+	}
+}
+
 func TestNativeQuotaConfigConflictsAndRoundTrip(t *testing.T) {
 	on := true
 	for _, id := range []string{"antigravity-priority", "codex-quota-scheduler", "antigravity-quota"} {
