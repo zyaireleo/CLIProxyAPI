@@ -433,6 +433,9 @@ func (e *Engine) assessLocked(id, provider, model string, now time.Time, copyPoo
 	if s.account.Disabled {
 		v.State = "disabled"
 		v.Reason = "manual_disabled"
+		if s.account.Provider == ProviderAntigravity && s.account.RejectionReason == "TOS_VIOLATION" {
+			v.Reason = "upstream_tos_violation"
+		}
 		v.Allowed = false
 		v.Weight = 0
 		return v

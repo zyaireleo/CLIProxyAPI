@@ -593,6 +593,10 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 				m.mu.Unlock()
 				return nil, err
 			}
+			if current.Disabled && strings.EqualFold(current.Provider, "antigravity") && current.Metadata["native_quota_rejection_reason"] == "TOS_VIOLATION" {
+				m.mu.Unlock()
+				return nil, err
+			}
 			current.Generation++
 			current.UpdatedAt = now
 			current.LastError = refreshErrorFromError(err)

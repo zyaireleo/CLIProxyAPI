@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -44,7 +45,11 @@ func (m *Manager) fetchNativeQuota(ctx context.Context, account nativequota.Acco
 	}
 	// A shadow read cannot initiate credential refresh or recover a quota 401.
 	// The ordinary auto-refresh lifecycle remains the sole owner in shadow.
+	rejectionAuthorization := e.AuthorizeAntigravityRejection()
 	allowRefresh := e.Config().Mode == nativequota.ModeEnforce
+	if !allowRefresh {
+		rejectionAuthorization = nativequota.RejectionAuthorization{}
+	}
 	if rt := m.roundTripperFor(a); rt != nil {
 		ctx = context.WithValue(ctx, roundTripperContextKey{}, rt)
 		ctx = context.WithValue(ctx, "cliproxy.roundtripper", rt)
@@ -89,6 +94,15 @@ func (m *Manager) fetchNativeQuota(ctx context.Context, account nativequota.Acco
 	for _, endpoint := range append(append([]string{}, endpoints...), nativeQuotaAGModelsURLs()...) {
 		raw, err := m.nativeQuotaRead(ctx, a, http.MethodPost, endpoint, payload, allowRefresh)
 		if err != nil {
+			var rejection *nativequota.RejectionError
+			if errors.As(err, &rejection) {
+				// A confirmed structured refusal is terminal, even after partial
+				// quota evidence. Never probe another endpoint to restore it.
+				if errApply := m.applyNativeQuotaRejection(ctx, a, rejectionAuthorization); errApply != nil {
+					return nativequota.Observation{}, errors.Join(err, errApply)
+				}
+				return nativequota.Observation{}, err
+			}
 			lastErr = err
 			if ctx.Err() != nil {
 				break
@@ -202,7 +216,7 @@ func (m *Manager) validateNativeQuotaRead(ctx context.Context, auth *Auth, requi
 		return fmt.Errorf("native-quota: provider inactive")
 	}
 	current, ok := m.GetByID(auth.ID)
-	if !ok || current.Disabled || current.Status == StatusDisabled || nativeQuotaAccount(current).Revision != nativeQuotaAccount(auth).Revision {
+	if !ok || current.Disabled || current.Status == StatusDisabled || current.RegistrationEpoch != auth.RegistrationEpoch || nativeQuotaAccount(current).Revision != nativeQuotaAccount(auth).Revision {
 		return fmt.Errorf("native-quota: account changed")
 	}
 	return nil
@@ -277,6 +291,10 @@ func (m *Manager) nativeQuotaRead(ctx context.Context, auth *Auth, method, endpo
 			}
 			auth = updated
 			continue
+		}
+		if readErr == nil && len(raw) <= nativeQuotaMaxResponse && strings.EqualFold(auth.Provider, "antigravity") && endpoint != nativeQuotaCodexURL &&
+			nativequota.IsAntigravityTOSViolation(resp.StatusCode, raw) {
+			return nil, &nativequota.RejectionError{}
 		}
 		if err := m.validateNativeQuotaRead(ctx, auth, false); err != nil {
 			return nil, err

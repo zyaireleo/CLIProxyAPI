@@ -132,7 +132,8 @@ type Account struct {
 	Disabled bool   `json:"disabled"`
 	Priority int    `json:"priority"`
 	// Revision is an opaque stable-principal revision, never a token or secret.
-	Revision string `json:"-"`
+	Revision        string `json:"-"`
+	RejectionReason string `json:"-"`
 }
 
 type Window struct {

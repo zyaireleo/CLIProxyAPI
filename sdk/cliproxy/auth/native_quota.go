@@ -209,7 +209,11 @@ func nativeQuotaAccount(a *Auth) nativequota.Account {
 		principal = fmt.Sprintf("%s:%d", a.ID, a.RegistrationEpoch)
 	}
 	revision := fmt.Sprintf("%x", sha256.Sum256([]byte(provider+"\x00"+principal)))
-	return nativequota.Account{ID: a.ID, Provider: provider, Disabled: a.Disabled || a.Status == StatusDisabled, Priority: authPriority(a), Revision: revision}
+	rejectionReason := ""
+	if provider == "antigravity" && a.Metadata["native_quota_rejection_reason"] == "TOS_VIOLATION" {
+		rejectionReason = "TOS_VIOLATION"
+	}
+	return nativequota.Account{ID: a.ID, Provider: provider, Disabled: a.Disabled || a.Status == StatusDisabled, Priority: authPriority(a), Revision: revision, RejectionReason: rejectionReason}
 }
 
 // Membership changes are published only from lifecycle/config events. This
