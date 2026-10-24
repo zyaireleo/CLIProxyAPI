@@ -3,10 +3,25 @@ package nativequota
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
 )
+
+func assertAdmissionUnavailable(t *testing.T, err error) {
+	t.Helper()
+	var admission *AdmissionError
+	if !errors.As(err, &admission) || !errors.Is(err, ErrAdmissionDenied) {
+		t.Fatalf("not a local admission denial: %v", err)
+	}
+	if admission.StatusCode() != http.StatusServiceUnavailable {
+		t.Fatalf("admission status = %d, want 503", admission.StatusCode())
+	}
+	if delay := admission.RetryAfter(); delay == nil || *delay != time.Second {
+		t.Fatalf("admission retry hint = %v, want 1s", delay)
+	}
+}
 
 func waitFor(t testing.TB, check func() bool) {
 	t.Helper()
@@ -56,6 +71,7 @@ func TestAdmissionQueueCancellationIdempotentRelease(t *testing.T) {
 	if !errors.Is(err, ErrQueueFull) || !errors.Is(err, ErrAdmissionDenied) {
 		t.Fatalf("wrong full error: %v", err)
 	}
+	assertAdmissionUnavailable(t, err)
 	cancel()
 	if err = <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel: %v", err)
@@ -105,6 +121,7 @@ func TestAdmissionWaitReleaseAndUnknownBound(t *testing.T) {
 	if !errors.Is(err, ErrWaitBudget) {
 		t.Fatalf("unknown concurrency unbounded: %v", err)
 	}
+	assertAdmissionUnavailable(t, err)
 }
 func TestCumulativeWaitBudgetAcrossRetriesExcludesGeneration(t *testing.T) {
 	e := singleLeaseEngine(t)

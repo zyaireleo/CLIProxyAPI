@@ -248,21 +248,77 @@ func TestNativeQuotaLeaseReleaseAndCountExclusion(t *testing.T) {
 	close(chunks)
 }
 
+type nativeQuotaResultHook struct {
+	NoopHook
+	results int
+}
+
+func (h *nativeQuotaResultHook) OnResult(context.Context, Result) { h.results++ }
+
 func TestNativeQuotaAdmissionDoesNotExpandRetries(t *testing.T) {
-	m, exec := nativeQuotaTestManager(t, nativequota.ModeEnforce, nil)
-	nativeQuotaTestObserve(t, m, "high", 1)
-	m.SetRetryConfig(5, 0, 10)
-	release, err := m.NativeQuota().Acquire(context.Background(), "high", "codex", "gpt-5.4")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer release()
-	_, err = m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.4"}, cliproxyexecutor.Options{})
-	if !errors.Is(err, nativequota.ErrWaitBudget) || exec.calls.Load() != 0 {
-		t.Fatalf("admission added upstream retry: %v calls=%d", err, exec.calls.Load())
-	}
-	if a, _ := m.GetByID("high"); a.Failed != 0 || a.LastError != nil {
-		t.Fatal("local admission polluted upstream health")
+	for _, streaming := range []bool{false, true} {
+		t.Run(map[bool]string{false: "execute", true: "stream"}[streaming], func(t *testing.T) {
+			m, exec := nativeQuotaTestManager(t, nativequota.ModeEnforce, nil)
+			hook := &nativeQuotaResultHook{}
+			m.hook = hook
+			cfg := m.NativeQuota().Config()
+			cfg.MaxWait = 20 * time.Millisecond
+			if err := m.NativeQuota().Configure(cfg); err != nil {
+				t.Fatal(err)
+			}
+			m.SetRetryConfig(5, time.Second, 10)
+			before := make(map[string]*Auth)
+			for _, id := range []string{"high", "low"} {
+				nativeQuotaTestObserve(t, m, id, 1)
+				release, err := m.NativeQuota().Acquire(context.Background(), id, "codex", "gpt-5.4")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(release)
+				before[id], _ = m.GetByID(id)
+			}
+			selections := 0
+			opts := cliproxyexecutor.Options{Metadata: map[string]any{
+				cliproxyexecutor.SelectedAuthCallbackMetadataKey: func(string) { selections++ },
+			}}
+			var err error
+			start := time.Now()
+			if streaming {
+				_, err = m.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.4"}, opts)
+			} else {
+				_, err = m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.4"}, opts)
+			}
+			if !errors.Is(err, nativequota.ErrWaitBudget) || exec.calls.Load() != 0 || selections != 1 {
+				t.Fatalf("admission expanded retries: %v calls=%d selections=%d", err, exec.calls.Load(), selections)
+			}
+			if elapsed := time.Since(start); elapsed < cfg.MaxWait || elapsed > time.Second {
+				t.Errorf("unexpected local queue duration: %v", elapsed)
+			}
+			if status := statusCodeFromError(err); status != http.StatusServiceUnavailable {
+				t.Errorf("local admission status = %d, want 503", status)
+			}
+			wrapped := wrapRequestStopError(err)
+			if !isRequestStopError(wrapped) || !isNativeQuotaAdmissionError(wrapped) || statusCodeFromError(wrapped) != http.StatusServiceUnavailable {
+				t.Errorf("request-stop wrapper lost local admission classification: %v", wrapped)
+			}
+			if got := SafeResponseHeaders(wrapped).Get("Retry-After"); got != "1" {
+				t.Errorf("wrapped local admission Retry-After = %q, want 1", got)
+			}
+			if hasUpstreamExecutionAttempt(err) || hook.results != 0 {
+				t.Errorf("local denial recorded as upstream: results=%d", hook.results)
+			}
+			for id, original := range before {
+				current, _ := m.GetByID(id)
+				if !reflect.DeepEqual(original, current) {
+					t.Errorf("local admission mutated credential %s", id)
+				}
+			}
+			for _, event := range m.NativeQuota().Events() {
+				if event.Kind == "health" {
+					t.Error("local admission polluted native quota health")
+				}
+			}
+		})
 	}
 }
 

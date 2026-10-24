@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -209,13 +210,23 @@ var (
 	ErrModeOff         = errors.New("native quota: mode off")
 )
 
-// AdmissionError is a local refusal, not an upstream 429. Use errors.Is to
-// classify it; no HTTP status is attached to avoid triggering upstream health.
+// AdmissionError is a local refusal, not an upstream failure. Use errors.Is to
+// classify it and stop the request before recording upstream health or retrying.
+// Its HTTP status describes local availability only.
 type AdmissionError struct{ Reason string }
 
 func (e *AdmissionError) Error() string {
 	return fmt.Sprintf("native quota: local admission denied (%s)", e.Reason)
 }
+
+func (e *AdmissionError) StatusCode() int { return http.StatusServiceUnavailable }
+
+// RetryAfter is a short client retry hint, not an upstream quota reset estimate.
+func (e *AdmissionError) RetryAfter() *time.Duration {
+	delay := time.Second
+	return &delay
+}
+
 func (e *AdmissionError) Is(target error) bool {
 	return target == ErrAdmissionDenied ||
 		(target == ErrQueueFull && e.Reason == "queue_full") ||
