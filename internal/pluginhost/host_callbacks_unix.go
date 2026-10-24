@@ -14,7 +14,6 @@ typedef struct {
 import "C"
 
 import (
-	"context"
 	"unsafe"
 )
 
@@ -40,7 +39,7 @@ func cliproxyHostCall(hostCtx unsafe.Pointer, method *C.char, request *C.uint8_t
 	if request != nil && requestLen > 0 {
 		requestBytes = C.GoBytes(unsafe.Pointer(request), C.int(requestLen))
 	}
-	ctx := withHostCallbackPluginID(context.Background(), entry.pluginID)
+	ctx := entry.context()
 	resp, errCall := entry.host.callFromPlugin(ctx, C.GoString(method), requestBytes)
 	if errCall != nil {
 		resp = marshalRPCError("host_call_failed", errCall.Error())

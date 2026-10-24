@@ -96,6 +96,9 @@ type Config struct {
 	// failover or immediate additional rounds allowed by RequestRetry.
 	MaxRetryInterval int `yaml:"max-retry-interval" json:"max-retry-interval"`
 
+	// NativeQuota is an opt-in, independent quota observation and admission policy.
+	NativeQuota NativeQuotaConfig `yaml:"native-quota" json:"native-quota"`
+
 	// QuotaExceeded defines the behavior when a quota is exceeded.
 	QuotaExceeded QuotaExceeded `yaml:"quota-exceeded" json:"quota-exceeded"`
 

@@ -23,10 +23,19 @@ func (s *Server) registerManagementRoutes() {
 
 	s.engine.POST("/v0/management/oauth-callback", s.managementAvailabilityMiddleware(), s.mgmt.PostOAuthCallback)
 	s.engine.GET("/v0/management/oauth-callback", s.managementAvailabilityMiddleware(), s.mgmt.GetOAuthCallback)
+	// This entry serves immutable embedded markup only; all data requests below require management auth.
+	s.engine.GET("/native-quota.html", s.managementAvailabilityMiddleware(), s.mgmt.GetNativeQuotaUI)
 
 	mgmt := s.engine.Group("/v0/management")
 	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
 	{
+		mgmt.GET("/native-quota/status", s.mgmt.GetNativeQuotaStatus)
+		mgmt.POST("/native-quota/refresh", s.mgmt.PostNativeQuotaRefresh)
+		mgmt.PUT("/native-quota/config", s.mgmt.PutNativeQuotaConfig)
+		mgmt.POST("/native-quota/migration/preview", s.mgmt.PostNativeQuotaMigrationPreview)
+		mgmt.POST("/native-quota/plugins/stop", s.mgmt.PostNativeQuotaPluginStop)
+		mgmt.GET("/native-quota/ui", s.mgmt.GetNativeQuotaUI)
+
 		mgmt.GET("/config", s.mgmt.GetConfig)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)

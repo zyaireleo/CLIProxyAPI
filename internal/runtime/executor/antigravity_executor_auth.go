@@ -73,6 +73,13 @@ func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *clipr
 	}
 	accessToken := metaStringValue(auth.Metadata, "access_token")
 	expiry, _ := auth.ExpirationTime()
+	if cliproxyauth.IsNativeQuotaRequest(ctx) {
+		// The manager owns refresh serialization and persistence for quota collection.
+		if accessToken == "" || (!expiry.IsZero() && !expiry.After(time.Now())) {
+			return "", nil, statusErr{code: http.StatusUnauthorized, msg: "quota access token requires managed refresh"}
+		}
+		return accessToken, nil, nil
+	}
 	if accessToken != "" && expiry.After(time.Now().Add(antigravityRequestTokenSafetyWindow)) {
 		e.maybeRefreshAntigravityCreditsHint(ctx, auth, accessToken)
 		return accessToken, nil, nil
@@ -138,10 +145,12 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 	auth.Metadata["timestamp"] = now.UnixMilli()
 	auth.Metadata["expired"] = now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
 	auth.Metadata["type"] = antigravityAuthType
-	if errProject := e.ensureAntigravityProjectID(ctx, auth, tokenResp.AccessToken); errProject != nil {
-		log.Warnf("antigravity executor: ensure project id failed: %v", errProject)
+	if !cliproxyauth.IsNativeQuotaRequest(ctx) {
+		if errProject := e.ensureAntigravityProjectID(ctx, auth, tokenResp.AccessToken); errProject != nil {
+			log.Warnf("antigravity executor: ensure project id failed: %v", errProject)
+		}
+		e.updateAntigravityCreditsBalance(ctx, auth, tokenResp.AccessToken)
 	}
-	e.updateAntigravityCreditsBalance(ctx, auth, tokenResp.AccessToken)
 	return auth, nil
 }
 

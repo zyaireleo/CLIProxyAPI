@@ -3,9 +3,11 @@ package pluginhost
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -361,6 +363,158 @@ func TestHostAuthSaveCallbackRejectsInvalidWeightBeforePersistence(t *testing.T)
 				t.Fatalf("invalid auth was registered: %#v", auths)
 			}
 		})
+	}
+}
+
+type quotaCallbackTestLoader struct {
+	contexts []context.Context
+	clients  []*lifecycleTestClient
+	onOpen   func(*Host, context.Context) error
+}
+
+func (l *quotaCallbackTestLoader) Open(file pluginFile, host *Host) (pluginClient, error) {
+	ctx := (dynamicHostCallbackEntry{host: host, pluginID: file.ID, callbacks: file.callbacks}).context()
+	l.contexts = append(l.contexts, ctx)
+	if l.onOpen != nil {
+		if errOpen := l.onOpen(host, ctx); errOpen != nil {
+			return nil, errOpen
+		}
+	}
+	client := &lifecycleTestClient{call: func(context.Context, string, []byte) ([]byte, error) {
+		return lifecycleRegistrationResult(validTestPlugin(file.ID))
+	}}
+	l.clients = append(l.clients, client)
+	return client, nil
+}
+
+func TestHostLegacyAuthSaveGenerationAllowsStartupAndRejectsRetiredAndStopped(t *testing.T) {
+	const id = "antigravity-priority"
+	authDir := t.TempDir()
+	request := []byte(`{"name":"legacy.json","json":{"type":"antigravity","priority":1}}`)
+	loader := &quotaCallbackTestLoader{onOpen: func(h *Host, ctx context.Context) error {
+		_, errSave := h.callFromPlugin(ctx, pluginabi.MethodHostAuthSave, request)
+		return errSave
+	}}
+	h := NewForTest(loader)
+	t.Cleanup(h.ShutdownAll)
+	root, _ := makeVersionedPluginDir(t, id, "1.0.0")
+	cfg := &config.Config{AuthDir: authDir, Plugins: config.PluginsConfig{
+		Enabled: true, Dir: root, Configs: map[string]config.PluginInstanceConfig{id: enabledPluginConfigWithStoreVersion(t, "1.0.0")},
+	}}
+	h.ApplyConfig(context.Background(), cfg)
+	if !h.PluginLoaded(id) || len(loader.contexts) != 1 {
+		t.Fatal("generation fence rejected a legitimate Open callback before load publication")
+	}
+	writeVersionedPluginFile(t, root, id, "2.0.0")
+	replacement := *cfg
+	replacement.Plugins.Configs = map[string]config.PluginInstanceConfig{id: enabledPluginConfigWithStoreVersion(t, "2.0.0")}
+	h.ApplyConfig(context.Background(), &replacement)
+	if len(loader.contexts) != 2 {
+		t.Fatal("replacement did not load")
+	}
+	staleRequest := []byte(`{"name":"legacy.json","json":{"type":"antigravity","priority":999}}`)
+	if _, errSave := h.callFromPlugin(loader.contexts[0], pluginabi.MethodHostAuthSave, staleRequest); errSave == nil {
+		t.Fatal("retired generation overwrote auth data")
+	}
+	if _, errSave := h.callFromPlugin(loader.contexts[1], pluginabi.MethodHostAuthSave, request); errSave != nil {
+		t.Fatalf("current generation auth save = %v", errSave)
+	}
+	h.ApplyConfig(context.Background(), disabledQuotaTestConfig(&replacement, id))
+	// Retired-only state must still block ownership even without a snapshot entry.
+	h.mu.Lock()
+	current := h.loaded[id]
+	delete(h.loaded, id)
+	h.mu.Unlock()
+	assertQuotaOwnershipBlocked(t, h, nil)
+	h.mu.Lock()
+	h.loaded[id] = current
+	h.mu.Unlock()
+	if errStop := h.StopPlugin(context.Background(), id); errStop != nil {
+		t.Fatal(errStop)
+	}
+	for index, ctx := range loader.contexts {
+		if _, errSave := h.callFromPlugin(ctx, pluginabi.MethodHostAuthSave, staleRequest); errSave == nil {
+			t.Fatalf("stopped generation %d overwrote auth data", index)
+		}
+		if loader.clients[index].shutdownCalls.Load() != 1 {
+			t.Fatalf("generation %d was not shut down exactly once", index)
+		}
+	}
+	data, errRead := os.ReadFile(filepath.Join(authDir, "legacy.json"))
+	if errRead != nil || string(data) != `{"type":"antigravity","priority":1}` {
+		t.Fatalf("stale generation mutated auth file: %s, %v", data, errRead)
+	}
+}
+
+type quotaBlockingAuthHook struct {
+	coreauth.NoopHook
+	started chan struct{}
+	release chan struct{}
+}
+
+func (h *quotaBlockingAuthHook) OnAuthRegistered(context.Context, *coreauth.Auth) {
+	close(h.started)
+	<-h.release
+}
+
+func TestHostLegacyStopWaitsForAlreadyAdmittedAuthSave(t *testing.T) {
+	const id = "codex-quota-scheduler"
+	loader := &quotaCallbackTestLoader{}
+	h := NewForTest(loader)
+	hook := &quotaBlockingAuthHook{started: make(chan struct{}), release: make(chan struct{})}
+	var releaseHook sync.Once
+	t.Cleanup(func() { releaseHook.Do(func() { close(hook.release) }); h.ShutdownAll() })
+	h.SetAuthManager(coreauth.NewManager(nil, nil, hook))
+	cfg := &config.Config{AuthDir: t.TempDir(), Plugins: config.PluginsConfig{Enabled: true, Dir: makePluginDir(t, id), Configs: enabledPluginConfigs(id)}}
+	h.ApplyConfig(context.Background(), cfg)
+	request := []byte(`{"name":"legacy.json","json":{"type":"codex","priority":1}}`)
+	saved := make(chan error, 1)
+	go func() {
+		_, errSave := h.callFromPlugin(loader.contexts[0], pluginabi.MethodHostAuthSave, request)
+		saved <- errSave
+	}()
+	waitForHostTestSignal(t, hook.started, "admitted auth save")
+	h.ApplyConfig(context.Background(), disabledQuotaTestConfig(cfg, id))
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if errStop := h.StopPlugin(ctx, id); !errors.Is(errStop, context.DeadlineExceeded) {
+		t.Fatalf("stop acknowledged in-flight auth save: %v", errStop)
+	}
+	if loader.clients[0].shutdownCalls.Load() != 1 {
+		t.Fatal("client shutdown was not started")
+	}
+	assertQuotaOwnershipBlocked(t, h, nil)
+	if _, errSave := h.callFromPlugin(loader.contexts[0], pluginabi.MethodHostAuthSave, request); errSave == nil {
+		t.Fatal("detached generation admitted another auth save")
+	}
+	releaseHook.Do(func() { close(hook.release) })
+	if errSave := waitForQuotaTestError(t, saved); errSave != nil {
+		t.Fatal(errSave)
+	}
+	if errStop := h.StopPlugin(context.Background(), id); errStop != nil {
+		t.Fatal(errStop)
+	}
+	if len(h.NativeQuotaConflicts(nil)) != 0 {
+		t.Fatal("drained auth save retained a conflict")
+	}
+}
+
+func TestHostAuthSaveGenerationFenceIsNarrow(t *testing.T) {
+	h := New()
+	h.runtimeConfig = &config.Config{AuthDir: t.TempDir()}
+	request := []byte(`{"name":"test.json","json":{"type":"demo"}}`)
+	// Unidentified in-process callbacks and unrelated plugins retain compatibility.
+	for _, ctx := range []context.Context{context.Background(), withHostCallbackPluginID(context.Background(), "unrelated")} {
+		if _, errSave := h.callFromPlugin(ctx, pluginabi.MethodHostAuthSave, request); errSave != nil {
+			t.Fatalf("unrelated callback was fenced: %v", errSave)
+		}
+	}
+	ctx := withHostCallbackPluginID(context.Background(), "antigravity-priority")
+	if _, errSave := h.callFromPlugin(ctx, pluginabi.MethodHostAuthSave, request); errSave == nil {
+		t.Fatal("identified legacy callback without generation was accepted")
+	}
+	if _, errList := h.callFromPlugin(ctx, pluginabi.MethodHostAuthList, nil); errList != nil {
+		t.Fatalf("read-only legacy callback was blocked: %v", errList)
 	}
 }
 

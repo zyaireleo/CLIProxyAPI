@@ -516,8 +516,38 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		lock = &authRefreshLock{}
 		m.refreshLocks.Store(id, lock)
 	}
-	lock.mu.Lock()
+	if IsNativeQuotaRequest(ctx) {
+		// Quota probes have a bounded background lifetime. Do not retain a
+		// collector slot behind an unrelated credential refresh after cancellation.
+		for !lock.mu.TryLock() {
+			timer := time.NewTimer(10 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+	} else {
+		lock.mu.Lock()
+	}
 	defer lock.mu.Unlock()
+	if IsNativeQuotaRequest(ctx) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		account, ok := nativeQuotaAttemptFromContext(ctx)
+		if !ok || account.ID != id {
+			return nil, errors.New("native-quota: missing refresh principal")
+		}
+		current, exists := m.GetByID(id)
+		if !exists || nativeQuotaAccount(current).Revision != account.Revision {
+			return nil, errors.New("native-quota: account changed")
+		}
+		if err := m.validateNativeQuotaRead(ctx, current, true); err != nil {
+			return nil, err
+		}
+	}
 
 	m.mu.RLock()
 	auth := m.auths[id]
@@ -541,6 +571,13 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 
 	base := auth.Clone()
 	updated, err := exec.Refresh(ctx, base.Clone())
+	if IsNativeQuotaRequest(ctx) {
+		// A quota mode change or principal replacement must not publish a
+		// late refresh failure into the credential's ordinary lifecycle state.
+		if errQuota := m.validateNativeQuotaRead(ctx, base, true); errQuota != nil {
+			return nil, errQuota
+		}
+	}
 	if err != nil && errors.Is(err, context.Canceled) {
 		log.Debugf("refresh canceled for %s, %s", auth.Provider, auth.ID)
 		return nil, err

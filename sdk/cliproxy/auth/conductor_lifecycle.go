@@ -123,6 +123,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		m.scheduler.upsertAuth(authClone.Clone())
 	}
 	m.queueRefreshReschedule(auth.ID)
+	m.syncNativeQuotaAccounts()
 	_ = m.persist(ctx, auth)
 	m.hook.OnAuthRegistered(ctx, auth.Clone())
 	if cooldownStateChanged {
@@ -259,6 +260,7 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 		}
 	}
 	authClone := auth.Clone()
+	quotaAccountsChanged := nativeQuotaAccount(existing) != nativeQuotaAccount(authClone) || existing.AuthKind() != authClone.AuthKind()
 	m.auths[auth.ID] = authClone
 	m.mu.Unlock()
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
@@ -268,6 +270,9 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 		m.scheduler.upsertAuth(authClone.Clone())
 	}
 	m.queueRefreshReschedule(auth.ID)
+	if quotaAccountsChanged {
+		m.syncNativeQuotaAccounts()
+	}
 	if !persistMetaMint {
 		_ = m.persist(ctx, auth)
 	}
@@ -327,6 +332,7 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 		m.scheduler.RecordRemovalTombstone(id, tombstoneEpoch)
 	}
 	m.queueRefreshUnschedule(id)
+	m.syncNativeQuotaAccounts()
 	m.invalidateSessionAffinity(id)
 
 	if provider != "" {
@@ -409,6 +415,7 @@ func (m *Manager) Load(ctx context.Context) error {
 		}
 	}
 	m.syncScheduler()
+	m.syncNativeQuotaAccounts()
 	return nil
 }
 

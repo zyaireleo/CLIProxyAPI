@@ -8,6 +8,7 @@ import (
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/nativequota"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -137,6 +138,12 @@ type resultPolicyHolder struct {
 
 // Manager orchestrates auth lifecycle, selection, execution, and persistence.
 type Manager struct {
+	nativeQuota               atomic.Pointer[nativequota.Engine]
+	nativeQuotaMu             sync.Mutex
+	nativeQuotaAccountsMu     sync.Mutex
+	nativeQuotaSelectionMu    sync.Mutex
+	nativeQuotaSelections     map[string]*smoothWeightedState
+	nativeQuotaOwnership      func()
 	imageRecoveryLeases       sync.Map
 	store                     Store
 	cooldownStore             CooldownStateStore

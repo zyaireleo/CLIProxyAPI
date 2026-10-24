@@ -49,6 +49,11 @@ func (s *Service) Run(ctx context.Context) error {
 		s.homeMu.Unlock()
 	}()
 
+	if s.cfg != nil {
+		if errValidate := s.cfg.ValidateNativeQuota(); errValidate != nil {
+			return errValidate
+		}
+	}
 	usage.StartDefault(ctx)
 	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
 	if homeEnabled {
@@ -125,6 +130,14 @@ func (s *Service) Run(ctx context.Context) error {
 	// handlers no longer depend on legacy clients; pass nil slice initially
 	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
 	s.syncPluginRuntimeConfig(ctx)
+	if s.coreManager != nil && s.cfg != nil {
+		if errQuota := s.coreManager.ApplyNativeQuotaConfig(ctx, s.cfg.NativeQuota); errQuota != nil {
+			return fmt.Errorf("cliproxy: native quota startup: %w", errQuota)
+		}
+		if errPersistence := s.configureNativeQuotaPersistence(ctx, s.cfg); errPersistence != nil {
+			log.Warn("native quota persistence unavailable; runtime quota evidence remains in memory")
+		}
+	}
 	if homeEnabled {
 		s.syncPluginModelRuntime(ctx)
 	}
@@ -292,7 +305,19 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		if s.watcherCancel != nil {
 			s.watcherCancel()
 		}
+		if errPersistence := s.stopNativeQuotaPersistence(ctx); errPersistence != nil {
+			log.Warn("native quota persistence worker did not stop within shutdown context")
+			if shutdownErr == nil {
+				shutdownErr = errPersistence
+			}
+		}
 		if s.coreManager != nil {
+			if errQuota := s.coreManager.StopNativeQuota(ctx); errQuota != nil {
+				log.WithError(errQuota).Warn("failed to stop native quota collector")
+				if shutdownErr == nil {
+					shutdownErr = errQuota
+				}
+			}
 			s.coreManager.StopAutoRefresh()
 		}
 		if s.watcher != nil {

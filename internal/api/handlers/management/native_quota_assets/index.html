@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>原生配额 · CPA</title>
+<style>
+:root { color-scheme: light; --surface: #ffffff; --sage-light: #eef4ef; --ink: #24362d; --sage: #42634d; --blue: #245d91; --line: #b8c9be; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--surface); color: var(--ink); font: 15px/1.55 system-ui, "Segoe UI", sans-serif; }
+main { max-width: 1500px; margin: 0 auto; padding: 24px; }
+h1 { font-size: 25px; margin: 0 0 6px; font-weight: 650; }
+h2 { font-size: 18px; margin: 0; }
+p { max-width: 78ch; margin: 8px 0 14px; }
+header { border-bottom: 3px solid var(--sage); padding-bottom: 14px; }
+label { display: inline-flex; flex-direction: column; gap: 4px; }
+input, select, textarea, button { font: inherit; color: inherit; border: 1px solid var(--sage); border-radius: 4px; padding: 7px 10px; background: white; }
+button { cursor: pointer; white-space: nowrap; }
+button.primary { background: var(--blue); border-color: var(--blue); color: white; }
+button:disabled { opacity: .55; cursor: not-allowed; }
+:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 16px 0; }
+.inline { flex-direction: row; align-items: center; gap: 8px; }
+input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--sage); }
+#key { width: min(340px, 100%); }
+#notice { min-height: 28px; padding: 8px 12px; background: var(--sage-light); border-left: 4px solid var(--sage); overflow-wrap: anywhere; }
+#notice[data-error=true] { color: #8b2727; border-color: #8b2727; background: #fff3f2; }
+.muted, small { color: #526457; }
+.small { font-size: 13px; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 4px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; text-align: left; }
+caption { text-align: left; background: var(--sage-light); padding: 12px; font-weight: 600; }
+th { background: var(--sage-light); font-weight: 600; white-space: nowrap; }
+th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+td { min-width: 100px; max-width: 340px; overflow-wrap: anywhere; }
+td div + div { margin-top: 6px; }
+tr:last-child td { border-bottom: 0; }
+.number { font-variant-numeric: tabular-nums; }
+.pager { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0 24px; }
+details { border-top: 1px solid var(--line); padding: 16px 0; }
+summary { cursor: pointer; font-weight: 600; width: fit-content; }
+textarea { width: 100%; max-width: 900px; min-height: 240px; display: block; font: 14px/1.5 ui-monospace, Consolas, monospace; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; background: var(--sage-light); padding: 12px; }
+footer { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 12px; }
+[hidden] { display: none !important; }
+@media (max-width: 600px) { main { padding: 16px 12px; } .toolbar > label { width: 100%; } h1 { font-size: 22px; } }
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>原生配额</h1>
+<p>按凭据与配额窗口检查可用性。这里只展示实际观测；未知不代表余额为零。刷新状态不会主动查询上游。</p>
+<span id="mode" class="muted">尚未连接管理 API</span>
+</header>
+<form id="connect-form" class="toolbar" autocomplete="off">
+<label>管理密钥 <input id="key" type="password" autocomplete="off" spellcheck="false" required aria-describedby="key-note"></label>
+<button class="primary" type="submit">连接</button>
+<button id="forget" type="button">清除密钥与数据</button>
+</form>
+<p id="key-note" class="small muted">密钥仅保留在当前页面内存，通过认证请求头发送；不写入浏览器存储或地址栏。关闭或刷新页面后需重新输入。请在可信 HTTPS 或本机连接上使用。</p>
+<div id="notice" role="status" aria-live="polite">输入管理密钥后连接。页面不包含已有密钥或账户数据。</div>
+<form id="filter-form" class="toolbar">
+<label>提供方 <select id="provider"><option value="">全部</option><option value="antigravity">Antigravity</option><option value="codex">Codex</option></select></label>
+<label>状态（精确匹配） <input id="state" maxlength="64" placeholder="留空显示全部"></label>
+<label>凭据 ID（精确匹配） <input id="auth-id" maxlength="512" placeholder="留空显示全部"></label>
+<label>每页 <select id="page-size"><option>25</option><option selected>50</option><option>100</option><option>200</option></select></label>
+<button id="filter" type="submit" disabled>筛选 / 读取状态</button>
+<label class="inline"><input id="auto" type="checkbox">每 30 秒读取状态（仅页面可见时）</label>
+</form>
+<div class="table-wrap" tabindex="0" role="region" aria-label="配额状态表，可横向滚动">
+<table>
+<caption>凭据运行状态 <span id="total" class="muted">未加载</span></caption>
+<thead><tr><th scope="col">凭据 / 提供方</th><th scope="col">模式 / 状态与原因</th><th scope="col">观测年龄 / 有效期</th><th scope="col">配额池 / 模型 / 窗口</th><th scope="col">剩余 / 重置时间</th><th scope="col">在途 / 权重</th><th scope="col">操作</th></tr></thead>
+<tbody id="accounts"><tr><td colspan="7">连接后显示实际数据。</td></tr></tbody>
+</table>
+</div>
+<nav class="pager" aria-label="分页"><button id="previous" disabled>上一页</button><span id="page-label">第 1 页</span><button id="next" disabled>下一页</button><span id="updated" class="small muted"></span></nav>
+<details>
+<summary>完整配置</summary>
+<p>保存将替换整个原生配额配置，不修改其他配置。enforce 会影响准入与路由，必须先完成旧调度器停用与交接；检测到冲突会拒绝保存。</p>
+<label for="config">原生配额 JSON（全部字段必填，时长为字符串）</label>
+<textarea id="config" spellcheck="false" autocomplete="off" aria-describedby="config-note"></textarea>
+<p id="config-note" class="small muted">状态自动刷新不会覆盖未保存的编辑。保存失败时以服务端返回为准；回滚失败需停止变更并人工核对磁盘与运行态。</p>
+<div class="toolbar"><button id="load-config" disabled>载入当前配置（覆盖编辑）</button><button id="save-config" class="primary" disabled>验证并保存配置</button></div>
+</details>
+<details>
+<summary>迁移预览（只读）</summary>
+<p>只接受版本 1 的预览格式、已知插件 ID / 版本、用户明确填写的 refresh_interval，以及一一对应的 credential_id / auth_id 映射。不会加载旧状态、启用账户、改写优先级或停用插件。</p>
+<p class="small muted">来源版本仅由用户声明，未验证正在运行的插件。antigravity-priority 1.2.20；codex-quota-scheduler 0.2.1。96–100 的优先级不是插件所有权证据。</p>
+<label for="migration">预览请求 JSON（不包含令牌或密码）</label>
+<textarea id="migration" spellcheck="false" autocomplete="off">{
+  "schema_version": 1,
+  "plugin_id": "antigravity-priority",
+  "plugin_version": "1.2.20",
+  "user_config": {"refresh_interval": "5m"},
+  "credential_mappings": []
+}</textarea>
+<div class="toolbar"><button id="preview" disabled>生成只读预览</button></div>
+<pre id="preview-output" tabindex="0" aria-label="迁移预览结果">尚未生成预览；不会执行迁移。</pre>
+</details>
+<details><summary>当前页最近事件（最多 100 条）</summary><pre id="events" tabindex="0">未加载</pre></details>
+<footer class="small muted">原生配额管理入口。shadow 仅观测；off 不主动刷新。此页面不宣称与旧插件全部功能等价。</footer>
+</main>
+<script>
+(() => {
+  'use strict';
+  const el = id => document.getElementById(id);
+  const base = '/v0/management/native-quota/';
+  let key = '', page = 1, total = 0, config = null, busy = false, epoch = 0;
+  const pending = new Set();
+  const migrationExample = el('migration').value;
+  const text = (node, value) => { node.textContent = value == null ? '未知' : String(value); };
+  const message = (value, error = false) => { text(el('notice'), value); el('notice').dataset.error = String(error); };
+  const stamp = value => !value || value.startsWith('0001-') ? '未知' : value;
+  const fraction = value => typeof value !== 'number' || !Number.isFinite(value) ? '未知' : String(value) + '（' + (value * 100).toPrecision(8) + '%）';
+  function controls() {
+    for (const id of ['filter', 'load-config', 'save-config', 'preview']) el(id).disabled = !key || busy;
+    el('previous').disabled = !key || busy || page <= 1;
+    el('next').disabled = !key || busy || page * Number(el('page-size').value) >= total;
+  }
+  async function request(path, method = 'GET', body) {
+    if (!key) throw new Error('请先连接管理 API。');
+    const current = epoch, controller = new AbortController();
+    pending.add(controller);
+    try {
+      const response = await fetch(base + path, {
+        method, headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        credentials: 'omit', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer', signal: controller.signal
+      });
+      if (current !== epoch) throw new Error('连接已清除。');
+      if (response.status === 401 || response.status === 403) { forget(); throw new Error('管理认证失败，请检查密钥与远程管理设置。'); }
+      const data = await response.json();
+      if (current !== epoch) throw new Error('连接已清除。');
+      if (!response.ok) throw new Error('请求未完成（HTTP ' + response.status + '）：' + (data.error || 'unknown_error'));
+      return data;
+    } finally { pending.delete(controller); }
+  }
+  function line(cell, value) { const node = document.createElement('div'); text(node, value); cell.appendChild(node); }
+  function render(accounts) {
+    const rows = [];
+    for (const account of accounts) {
+      const row = document.createElement('tr');
+      const cells = Array.from({ length: 7 }, () => { const cell = document.createElement('td'); row.appendChild(cell); return cell; });
+      line(cells[0], account.auth_id); line(cells[0], account.provider);
+      line(cells[1], account.mode + ' / ' + account.state); line(cells[1], account.reason);
+      line(cells[1], account.disabled ? '已禁用（保留，不推断来源）' : account.allowed ? '当前允许' : '当前不允许');
+      line(cells[2], account.age_seconds == null ? '年龄未知' : account.age_seconds.toFixed(1) + ' 秒');
+      line(cells[2], '观测 ' + stamp(account.observed_at)); line(cells[2], '有效期 ' + stamp(account.expires_at));
+      const pools = Array.isArray(account.pools) ? account.pools : [];
+      if (!pools.length) { line(cells[3], '尚无配额窗口'); line(cells[4], '未知'); }
+      for (const pool of pools) {
+        line(cells[3], pool.id + (pool.blocked ? ' / 阻塞' : ''));
+        line(cells[3], (pool.models || []).join(', ') || '未声明模型关联');
+        if (!(pool.windows || []).length) line(cells[4], pool.id + ' / 未知');
+        for (const window of pool.windows || []) {
+          line(cells[3], window.id + ' / ' + window.duration_seconds + ' 秒' + (window.blocked ? ' / 阻塞' : ''));
+          line(cells[4], pool.id + '/' + window.id + '：' + fraction(window.remaining));
+          line(cells[4], '重置 ' + stamp(window.reset_at));
+        }
+      }
+      cells[4].className = 'number'; cells[5].className = 'number';
+      line(cells[5], '在途 ' + account.in_flight); line(cells[5], '权重 ' + account.weight);
+      const refresh = document.createElement('button'); text(refresh, '查询上游配额');
+      refresh.disabled = account.mode === 'off' || account.disabled;
+      refresh.addEventListener('click', async () => {
+        refresh.disabled = true;
+        try {
+          const result = await request('refresh', 'POST', { auth_id: account.auth_id });
+          message(result.queued ? '异步查询已入队；稍后读取状态。' : '请求已接受或合并；不会重复查询。');
+        } catch (error) { message(error.message, true); }
+        finally { refresh.disabled = !key || account.mode === 'off' || account.disabled; }
+      });
+      cells[6].appendChild(refresh); rows.push(row);
+    }
+    if (!rows.length) {
+      const row = document.createElement('tr'), cell = document.createElement('td'); cell.colSpan = 7;
+      text(cell, '没有匹配的凭据。检查筛选条件；此处不会生成示例余额。'); row.appendChild(cell); rows.push(row);
+    }
+    el('accounts').replaceChildren(...rows);
+  }
+  async function loadStatus(fillConfig = false) {
+    if (busy || !key) return;
+    const current = epoch;
+    busy = true; controls();
+    try {
+      const query = new URLSearchParams({ page: String(page), page_size: el('page-size').value });
+      for (const [field, id] of [['provider', 'provider'], ['state', 'state'], ['auth_id', 'auth-id']]) if (el(id).value) query.set(field, el(id).value);
+      const data = await request('status?' + query);
+      if (current !== epoch) return;
+      total = data.total; config = data.config;
+      if (fillConfig) el('config').value = JSON.stringify(config, null, 2);
+      render(data.accounts); text(el('total'), '共 ' + total + ' 个'); text(el('page-label'), '第 ' + page + ' 页');
+      text(el('mode'), '配置模式 ' + config.mode + ' / 运行模式 ' + data.runtime_mode);
+      text(el('updated'), '读取时间 ' + stamp(data.server_time)); text(el('events'), JSON.stringify(data.events, null, 2));
+      message('已读取实际状态。上游配额查询需单独点击或由采集器调度。');
+    } catch (error) { if (current === epoch) message(error.message, true); }
+    finally { if (current === epoch) { busy = false; controls(); } }
+  }
+  function forget() {
+    epoch++; key = ''; busy = false; config = null; total = 0; page = 1;
+    for (const controller of pending) controller.abort(); pending.clear();
+    el('key').value = ''; el('config').value = ''; el('auto').checked = false;
+    el('auth-id').value = ''; el('state').value = ''; el('provider').value = '';
+    el('migration').value = ''; text(el('preview-output'), '尚未生成预览；不会执行迁移。');
+    text(el('accounts'), '数据已清除。'); text(el('events'), '未加载'); text(el('mode'), '尚未连接管理 API');
+    text(el('total'), '未加载'); text(el('page-label'), '第 1 页'); text(el('updated'), '');
+    message('密钥与页面数据已清除。'); controls();
+  }
+  el('connect-form').addEventListener('submit', event => {
+    event.preventDefault();
+    const nextKey = el('key').value;
+    forget(); key = nextKey; el('migration').value = migrationExample; controls(); void loadStatus(true);
+  });
+  el('forget').addEventListener('click', forget);
+  el('filter-form').addEventListener('submit', event => { event.preventDefault(); page = 1; void loadStatus(); });
+  el('previous').addEventListener('click', () => { page--; void loadStatus(); });
+  el('next').addEventListener('click', () => { page++; void loadStatus(); });
+  el('load-config').addEventListener('click', () => { void loadStatus(true); });
+  el('save-config').addEventListener('click', async () => {
+    try {
+      const next = JSON.parse(el('config').value);
+      if (next.mode === 'enforce' && !window.confirm('确认已停用旧调度器并验证交接？enforce 将影响路由与准入。')) return;
+      busy = true; controls();
+      const result = await request('config', 'PUT', next); config = result.config;
+      el('config').value = JSON.stringify(config, null, 2); message('完整配置已验证并保存。');
+    } catch (error) { message(error.message, true); }
+    finally { busy = false; controls(); }
+  });
+  el('preview').addEventListener('click', async () => {
+    try {
+      const body = JSON.parse(el('migration').value);
+      busy = true; controls();
+      const data = await request('migration/preview', 'POST', body);
+      text(el('preview-output'), JSON.stringify(data, null, 2)); message('只读预览完成。没有修改任何配置或凭据。');
+    } catch (error) { message(error.message, true); }
+    finally { busy = false; controls(); }
+  });
+  window.setInterval(() => { if (key && el('auto').checked && document.visibilityState === 'visible') void loadStatus(); }, 30000);
+  window.addEventListener('pagehide', forget);
+  controls();
+})();
+</script>
+</body>
+</html>

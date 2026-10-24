@@ -241,13 +241,17 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		}
 		execOpts.Metadata = ensureCanonicalSessionMetadata(execOpts.Metadata, execOpts.Headers, payload)
 		ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
+		ctx = m.nativeQuotaAttemptContext(ctx, auth)
 		startStream := time.Now()
-		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, execOpts)
+		streamResult, errStream := m.executeNativeQuotaStreamAttempt(ctx, executor, auth, execReq, execOpts)
 		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
 		if hasUpstreamExecutionAttempt(errStream) {
 			upstreamErr = errStream
 		}
 		durationStream := time.Since(startStream)
+		if isNativeQuotaAdmissionError(errStream) || isRequestStopError(errStream) {
+			return nil, errStream
+		}
 		if errStream != nil {
 			geminiresponse.SaveFailure(ctx, errStream)
 			if errCtx := ctx.Err(); errCtx != nil {
@@ -262,8 +266,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					didRefreshOnUnauthorized = true
 					ctx = newUpstreamAttemptContext(ctx)
 					ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
+					ctx = m.nativeQuotaAttemptContext(ctx, auth)
 					startRetry := time.Now()
-					streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
+					streamResult, errStream = m.executeNativeQuotaStreamAttempt(ctx, executor, auth, execReq, execOpts)
 					errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
 					if hasUpstreamExecutionAttempt(errStream) {
 						upstreamErr = errStream
@@ -286,6 +291,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			if errCancel := claudeOAuthRequestCancellation(ctx, auth, errStream); errCancel != nil {
 				return nil, errCancel
 			}
+		}
+		if isNativeQuotaAdmissionError(errStream) || isRequestStopError(errStream) {
+			return nil, errStream
 		}
 		streamResult, errStream = validateStreamResult(streamResult, errStream)
 		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
@@ -351,8 +359,12 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					didRefreshOnUnauthorized = true
 					ctx = newUpstreamAttemptContext(ctx)
+					ctx = m.nativeQuotaAttemptContext(ctx, auth)
 					startRetry := time.Now()
-					retryStream, retryErr := executor.ExecuteStream(ctx, auth, execReq, execOpts)
+					retryStream, retryErr := m.executeNativeQuotaStreamAttempt(ctx, executor, auth, execReq, execOpts)
+					if isNativeQuotaAdmissionError(retryErr) || isRequestStopError(retryErr) {
+						return nil, retryErr
+					}
 					retryErr = markUpstreamExecutionAttemptFromContext(ctx, retryErr)
 					retryStream, retryErr = validateStreamResult(retryStream, retryErr)
 					retryErr = markUpstreamExecutionAttemptFromContext(ctx, retryErr)
@@ -471,6 +483,11 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			remaining = closedCh
 		}
 		attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, execModel, aliasResult)
+		// Bootstrap latency is time to first output, not the duration of a long
+		// generation stream. Only native quota health consumes this value.
+		if m.nativeQuotaFor(provider, false) != nil {
+			ctx = context.WithValue(ctx, nativeQuotaLatencyContextKey{}, time.Since(startStream))
+		}
 		return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, routeModel, streamResult.Headers, buffered, remaining, attemptAliasResult, ephemeralResult, execOpts), nil
 	}
 	if lastErr == nil {

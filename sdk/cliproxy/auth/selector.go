@@ -619,6 +619,9 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
+	if selected, handled := pickNativeQuotaWeighted(ctx, available, false); handled {
+		return selected, nil
+	}
 	key := provider + ":" + canonicalModelKey(model)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -677,6 +680,9 @@ func (s *WeightedRoundRobinSelector) Pick(ctx context.Context, provider, model s
 		return nil, errAvailable
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
+	if selected, handled := pickNativeQuotaWeighted(ctx, available, true); handled {
+		return selected, nil
+	}
 	stateModel := weightedSelectorStateModel(ctx, model)
 	key := provider + ":" + canonicalModelKey(stateModel)
 
@@ -817,6 +823,9 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
+	if selected, handled := pickNativeQuotaWeighted(ctx, available, false); handled {
+		return selected, nil
+	}
 	return available[0], nil
 }
 

@@ -8,22 +8,60 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
     steps:
-      - name: Checkout
+      - name: Checkout reviewed head
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: '1.26.7'
           cache: true
       - name: Validate deployment script
         run: bash deploy/216/test-deploy.sh
       - name: Test
         run: CGO_ENABLED=1 go test ./...
-      - name: Refresh models catalog
-        run: bash .github/scripts/refresh-model-catalogs.sh
-      - name: Build
+      - name: Native quota race regressions
+        run: CGO_ENABLED=1 go test -race ./internal/nativequota ./sdk/cliproxy/auth ./internal/pluginhost ./internal/api/handlers/management ./sdk/cliproxy ./test -run 'NativeQuota|Admission|Collector|Snapshot|Quota.*Ownership|StopPlugin' -count=1 -timeout=10m
+      - name: Native quota page DOM tests
+        run: node --test internal/api/handlers/management/native_quota_assets/native_quota_dom_test.cjs
+      - name: Build reviewed Linux candidate
+        env:
+          REVIEWED_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          go build -o test-output ./cmd/server
-          rm -f test-output
+          set -euo pipefail
+          staging="${RUNNER_TEMP}/native-quota-release"
+          mkdir -p "$staging"
+          test "$(git rev-parse HEAD)" = "$REVIEWED_SHA"
+          git diff --exit-code
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -buildvcs=false \
+            -ldflags="-s -w -X main.Version=cpa-native-quota-${REVIEWED_SHA::12} -X main.Commit=${REVIEWED_SHA}" \
+            -o "$staging/cli-proxy-api" ./cmd/server
+          file "$staging/cli-proxy-api"
+          ldd "$staging/cli-proxy-api"
+          export STAGING="$staging"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['STAGING'])
+          binary = root / 'cli-proxy-api'
+          info = {
+              'commit': os.environ['REVIEWED_SHA'],
+              'go_version': subprocess.check_output(['go', 'version'], text=True).strip(),
+              'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
+              'binary_bytes': binary.stat().st_size,
+              'tests': ['go test ./...', 'native quota race regressions', 'native quota DOM tests'],
+              'scope': 'PR candidate only; no automatic deployment'
+          }
+          (root / 'BUILDINFO.json').write_text(json.dumps(info, indent=2) + '\n')
+          PY
+          (cd "$staging" && sha256sum cli-proxy-api BUILDINFO.json > SHA256SUMS)
+          tar -C "$staging" -czf "${RUNNER_TEMP}/cpa-native-quota-${REVIEWED_SHA}.tar.gz" cli-proxy-api BUILDINFO.json SHA256SUMS
+      - name: Upload candidate without deploying
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpa-native-quota-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/cpa-native-quota-${{ github.event.pull_request.head.sha }}.tar.gz
+          retention-days: 7

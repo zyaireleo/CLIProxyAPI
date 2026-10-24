@@ -109,6 +109,17 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 	if newCfg == nil {
 		return configCommit{}
 	}
+	newCfg = newCfg.CloneForRuntime()
+	if errValidate := newCfg.ValidateNativeQuota(); errValidate != nil {
+		log.WithError(errValidate).Warn("rejected invalid native quota config")
+		return configCommit{}
+	}
+	if s.coreManager != nil {
+		if errValidate := s.coreManager.ValidateNativeQuotaConfig(newCfg.NativeQuota); errValidate != nil {
+			log.WithError(errValidate).Warn("rejected native quota ownership conflict")
+			return configCommit{}
+		}
+	}
 	if errValidate := newCfg.AntigravityModels.Validate(); errValidate != nil {
 		log.WithError(errValidate).Warn("rejected invalid antigravity model config")
 		return configCommit{}
@@ -226,6 +237,13 @@ func (s *Service) applyManagerConfig(ctx context.Context, commit configCommit) b
 	store := s.resolveCooldownStateStore(commit.cfg)
 	if !s.coreManager.ApplyConfigWithCooldownStateStore(ctx, commit.cfg, store) {
 		return false
+	}
+	if errQuota := s.coreManager.ApplyNativeQuotaConfig(ctx, commit.cfg.NativeQuota); errQuota != nil {
+		log.WithError(errQuota).Warn("rejected native quota runtime config")
+		return false
+	}
+	if errPersistence := s.configureNativeQuotaPersistence(ctx, commit.cfg); errPersistence != nil {
+		log.Warn("native quota persistence unavailable; runtime quota evidence remains in memory")
 	}
 	s.coreManager.SetOAuthModelAlias(commit.cfg.OAuthModelAlias)
 	return true

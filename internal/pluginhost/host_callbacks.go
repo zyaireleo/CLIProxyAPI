@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
@@ -69,8 +70,83 @@ type rpcHostModelExecutionRequest struct {
 }
 
 type dynamicHostCallbackEntry struct {
-	host     *Host
-	pluginID string
+	host      *Host
+	pluginID  string
+	callbacks *pluginCallbackGeneration
+}
+
+func (e dynamicHostCallbackEntry) context() context.Context {
+	ctx := withHostCallbackPluginID(context.Background(), e.pluginID)
+	if e.callbacks != nil {
+		ctx = context.WithValue(ctx, hostCallbackGenerationKey{}, e.callbacks)
+	}
+	return ctx
+}
+
+type hostCallbackGenerationKey struct{}
+
+// pluginCallbackGeneration fences auth writes by a particular legacy scheduler
+// instance, including callbacks made during Open/Register before publication.
+// Detachment rejects new writes; already admitted writes must drain before the
+// host acknowledges shutdown and permits native quota ownership.
+// Other plugins retain their existing callback behavior.
+type pluginCallbackGeneration struct {
+	mu       sync.Mutex
+	detached bool
+	writes   int
+	drained  chan struct{}
+}
+
+func newPluginCallbackGeneration(id string) *pluginCallbackGeneration {
+	if legacyQuotaProvider(id) == "" {
+		return nil
+	}
+	return &pluginCallbackGeneration{drained: make(chan struct{})}
+}
+
+func (g *pluginCallbackGeneration) detach() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	if !g.detached {
+		g.detached = true
+		if g.writes == 0 {
+			close(g.drained)
+		}
+	}
+	g.mu.Unlock()
+}
+
+func (g *pluginCallbackGeneration) wait() {
+	if g != nil {
+		<-g.drained
+	}
+}
+
+func beginPluginAuthSave(ctx context.Context) (func(), error) {
+	id := hostCallbackPluginIDFromContext(ctx)
+	if legacyQuotaProvider(id) == "" {
+		return func() {}, nil
+	}
+	g, _ := ctx.Value(hostCallbackGenerationKey{}).(*pluginCallbackGeneration)
+	if g == nil {
+		return nil, fmt.Errorf("plugin %s auth save requires a live callback generation", id)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.detached {
+		return nil, fmt.Errorf("plugin %s auth save rejected after detachment", id)
+	}
+	g.writes++
+	return func() {
+		g.mu.Lock()
+		g.writes--
+		if g.detached && g.writes == 0 {
+			close(g.drained)
+		}
+		g.mu.Unlock()
+	}, nil
 }
 
 type hostCallbackPluginIDKey struct{}

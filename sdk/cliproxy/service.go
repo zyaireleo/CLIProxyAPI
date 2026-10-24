@@ -102,6 +102,9 @@ type Service struct {
 	// cooldownStateStore persists runtime cooldown state when enabled.
 	cooldownStateStore coreauth.CooldownStateStore
 
+	nativeQuotaPersistenceMu sync.Mutex
+	nativeQuotaPersistence   *nativeQuotaPersistence
+
 	// pluginHost owns dynamic plugin lifecycle and runtime capability adapters.
 	pluginHost *pluginhost.Host
 

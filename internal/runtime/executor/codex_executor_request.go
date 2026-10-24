@@ -75,11 +75,21 @@ func (e *CodexExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 	if ctx == nil {
 		ctx = req.Context()
 	}
-	httpReq := req.WithContext(ctx)
+	httpReq := req.Clone(ctx)
+	quotaRequest := cliproxyauth.IsNativeQuotaRequest(ctx)
+	if quotaRequest {
+		if errValidate := helps.ValidateNativeQuotaRequest(httpReq, "codex"); errValidate != nil {
+			return nil, errValidate
+		}
+	}
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
 		return nil, err
 	}
 	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
+	if quotaRequest {
+		httpReq.Host = ""
+		httpClient = helps.NativeQuotaHTTPClient(httpClient)
+	}
 	return httpClient.Do(httpReq)
 }
 

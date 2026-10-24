@@ -241,7 +241,7 @@ func mergeNodePreserve(dst, src *yaml.Node, path ...[]string) {
 		}
 	case yaml.SequenceNode:
 		// Preserve explicit null style if dst was null and src is empty sequence
-		if dst.Kind == yaml.ScalarNode && dst.Tag == "!!null" && len(src.Content) == 0 {
+		if dst.Kind == yaml.ScalarNode && dst.Tag == "!!null" && len(src.Content) == 0 && !isNativeQuotaProvidersPath(currentPath) {
 			// Keep as null to preserve original style
 			return
 		}
@@ -318,6 +318,14 @@ func appendPath(path []string, key string) []string {
 // represents a known default value that should not be written to the config file.
 // This prevents non-zero defaults from polluting the config.
 func isKnownDefaultValue(path []string, node *yaml.Node) bool {
+	if isNativeQuotaProvidersPath(path) && node != nil && node.Kind == yaml.SequenceNode {
+		return false
+	}
+	if len(path) == 1 && path[0] == "native-quota" && node != nil && node.Kind == yaml.MappingNode {
+		if index := findMapKeyIndex(node, "providers"); index >= 0 && node.Content[index+1].Kind == yaml.SequenceNode {
+			return false
+		}
+	}
 	if isPluginConfigsSubtreePath(path) {
 		return false
 	}
@@ -402,7 +410,7 @@ func pruneKnownDefaultsInNewNode(path []string, node *yaml.Node) {
 
 			pruneKnownDefaultsInNewNode(childPath, valueNode)
 			if (valueNode.Kind == yaml.MappingNode || valueNode.Kind == yaml.SequenceNode) &&
-				len(valueNode.Content) == 0 {
+				len(valueNode.Content) == 0 && !isNativeQuotaProvidersPath(childPath) {
 				continue
 			}
 
@@ -862,6 +870,10 @@ func removeLegacyAuthBlock(root *yaml.Node) {
 		return
 	}
 	removeMapKey(root, "auth")
+}
+
+func isNativeQuotaProvidersPath(path []string) bool {
+	return len(path) == 2 && path[0] == "native-quota" && path[1] == "providers"
 }
 
 func isPluginConfigsPath(path []string) bool {

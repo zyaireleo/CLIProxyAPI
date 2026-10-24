@@ -19,9 +19,10 @@ var (
 )
 
 type pluginFile struct {
-	ID      string
-	Path    string
-	Version string
+	ID        string
+	Path      string
+	Version   string
+	callbacks *pluginCallbackGeneration
 }
 
 // PluginFileInfo describes a plugin binary selected by the host discovery rules.

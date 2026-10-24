@@ -69,6 +69,55 @@ func runtimeConfigFromConfig(cfg *config.Config) (runtimeConfig, error) {
 	return out, nil
 }
 
+// Only these legacy schedulers participate in the native quota handoff.
+func legacyQuotaProvider(id string) string {
+	switch id {
+	case "antigravity-priority":
+		return "antigravity"
+	case "codex-quota-scheduler":
+		return "codex"
+	default:
+		return ""
+	}
+}
+
+func legacyQuotaPlugins(providers []string) []string {
+	antigravity, codex := len(providers) == 0, len(providers) == 0
+	for _, provider := range providers {
+		switch strings.ToLower(strings.TrimSpace(provider)) {
+		case "antigravity":
+			antigravity = true
+		case "codex":
+			codex = true
+		}
+	}
+	var ids []string
+	if antigravity {
+		ids = append(ids, "antigravity-priority")
+	}
+	if codex {
+		ids = append(ids, "codex-quota-scheduler")
+	}
+	return ids
+}
+
+func nativeQuotaBlocksPlugin(cfg *config.Config, id string) bool {
+	if cfg == nil || legacyQuotaProvider(id) == "" || !strings.EqualFold(strings.TrimSpace(cfg.NativeQuota.Mode), "enforce") {
+		return false
+	}
+	runtime, errRuntime := cfg.NativeQuota.RuntimeConfig()
+	if errRuntime != nil {
+		// Invalid enforce config must not accidentally reopen a legacy owner.
+		return true
+	}
+	for _, legacyID := range legacyQuotaPlugins(runtime.Providers) {
+		if legacyID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func defaultRuntimeItemConfig(id string) runtimeItemConfig {
 	return runtimeItemConfig{
 		ID:         id,

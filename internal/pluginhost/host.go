@@ -29,6 +29,7 @@ type loadedPlugin struct {
 	plugin     pluginapi.Plugin
 	registered bool
 	client     pluginClient
+	callbacks  *pluginCallbackGeneration
 }
 
 type modelExecutor interface {
@@ -37,15 +38,24 @@ type modelExecutor interface {
 }
 
 type pluginUnloadTarget struct {
-	id      string
-	name    string
-	path    string
-	version string
-	client  pluginClient
+	id        string
+	name      string
+	path      string
+	version   string
+	client    pluginClient
+	callbacks *pluginCallbackGeneration
+}
+
+type pluginShutdown struct {
+	targets []pluginUnloadTarget
+	done    chan struct{}
+	once    sync.Once
 }
 
 type pluginLoadRequest struct {
 	result         chan pluginLoadResult
+	done           chan struct{}
+	callbacks      *pluginCallbackGeneration
 	cleanupStarted bool
 }
 
@@ -63,6 +73,8 @@ type Host struct {
 	loaded                 map[string]*loadedPlugin
 	retired                map[string][]*loadedPlugin
 	loading                map[string]*pluginLoadRequest
+	shuttingDown           map[string]*pluginShutdown
+	nativeQuotaOwners      map[string]int
 	fused                  map[string]string
 	pluginFileVersions     map[string]string
 	activePluginVersions   map[string]string
@@ -96,6 +108,8 @@ func New() *Host {
 		loaded:                 make(map[string]*loadedPlugin),
 		retired:                make(map[string][]*loadedPlugin),
 		loading:                make(map[string]*pluginLoadRequest),
+		shuttingDown:           make(map[string]*pluginShutdown),
+		nativeQuotaOwners:      make(map[string]int),
 		fused:                  make(map[string]string),
 		pluginFileVersions:     make(map[string]string),
 		activePluginVersions:   make(map[string]string),
@@ -175,7 +189,7 @@ func (h *Host) PluginLoaded(id string) bool {
 	return len(h.retired[id]) > 0
 }
 
-// PluginBusy reports whether a plugin dynamic library is loaded or being loaded.
+// PluginBusy reports whether a plugin is loaded, loading, or still shutting down.
 func (h *Host) PluginBusy(id string) bool {
 	if h == nil {
 		return false
@@ -193,7 +207,62 @@ func (h *Host) PluginBusy(id string) bool {
 		return true
 	}
 	_, ok := h.loading[id]
-	return ok
+	return ok || h.shuttingDown[id] != nil
+}
+
+// NativeQuotaConflicts reports live legacy quota owners, independently of their
+// enabled flag or snapshot registration. A detached client remains a conflict
+// until Shutdown returns and its admitted auth-save callbacks have drained.
+func (h *Host) NativeQuotaConflicts(providers []string) []string {
+	if h == nil {
+		return nil
+	}
+	covered := legacyQuotaPlugins(providers)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var conflicts []string
+	for _, id := range covered {
+		if h.loaded[id] != nil || len(h.retired[id]) > 0 || h.loading[id] != nil || h.shuttingDown[id] != nil {
+			conflicts = append(conflicts, id)
+		}
+	}
+	return conflicts
+}
+
+// AcquireNativeQuotaOwnership atomically reserves providers for native enforce.
+// The caller holds the lease for the entire enforced interval. Loading tokens and
+// reservations share mu, so even an ApplyConfig carrying stale configuration
+// cannot start a legacy owner after a successful acquisition. Overlapping leases
+// support provider changes; releasing one never drops another caller's lease.
+func (h *Host) AcquireNativeQuotaOwnership(providers []string) (func(), error) {
+	if h == nil {
+		return nil, fmt.Errorf("plugin host is unavailable")
+	}
+	ids := legacyQuotaPlugins(providers)
+	h.mu.Lock()
+	for _, id := range ids {
+		if h.loaded[id] != nil || len(h.retired[id]) > 0 || h.loading[id] != nil || h.shuttingDown[id] != nil {
+			h.mu.Unlock()
+			return nil, fmt.Errorf("native quota ownership conflicts with plugin %s; completed stop is required", id)
+		}
+	}
+	for _, id := range ids {
+		h.nativeQuotaOwners[id]++
+	}
+	h.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			h.mu.Lock()
+			for _, id := range ids {
+				h.nativeQuotaOwners[id]--
+				if h.nativeQuotaOwners[id] == 0 {
+					delete(h.nativeQuotaOwners, id)
+				}
+			}
+			h.mu.Unlock()
+		})
+	}, nil
 }
 
 func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
@@ -254,7 +323,15 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 		if !item.Enabled {
 			continue
 		}
+		if nativeQuotaBlocksPlugin(cfg, file.ID) {
+			log.WithField("plugin_id", file.ID).Warn("pluginhost: native quota enforce prevents legacy scheduler loading")
+			continue
+		}
 		h.mu.Lock()
+		if h.shuttingDown[file.ID] != nil || h.nativeQuotaOwners[file.ID] > 0 {
+			h.mu.Unlock()
+			continue
+		}
 		lp := h.loaded[file.ID]
 		var replaced *loadedPlugin
 		if lp != nil && cleanPluginPath(lp.path) != cleanPluginPath(file.Path) {
@@ -272,9 +349,13 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 		var plugin pluginapi.Plugin
 		registeredNow := false
 		if lp == nil {
-			request := &pluginLoadRequest{result: make(chan pluginLoadResult, 1)}
+			request := &pluginLoadRequest{
+				result:    make(chan pluginLoadResult, 1),
+				done:      make(chan struct{}),
+				callbacks: newPluginCallbackGeneration(file.ID),
+			}
 			h.mu.Lock()
-			if _, loading := h.loading[file.ID]; loading {
+			if h.loading[file.ID] != nil || h.shuttingDown[file.ID] != nil || h.nativeQuotaOwners[file.ID] > 0 {
 				h.mu.Unlock()
 				continue
 			}
@@ -337,6 +418,7 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 				return
 			}
 			delete(h.loading, file.ID)
+			close(request.done)
 			lp = loadResult.loaded
 			if replaced != nil {
 				hotReloadFields = pluginHotReloadLogFields(file.ID, file.Version, file.Path, replaced.version, replaced.path)
@@ -415,6 +497,7 @@ func (h *Host) startPluginLoad(ctx context.Context, file pluginFile, item runtim
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	file.callbacks = request.callbacks
 	go func() {
 		client, errOpen := h.loader.Open(file, h)
 		if errOpen != nil {
@@ -426,10 +509,11 @@ func (h *Host) startPluginLoad(ctx context.Context, file pluginFile, item runtim
 			return
 		}
 		loaded := &loadedPlugin{
-			id:      file.ID,
-			path:    file.Path,
-			version: file.Version,
-			client:  newGuardedPluginClient(client),
+			id:        file.ID,
+			path:      file.Path,
+			version:   file.Version,
+			client:    newGuardedPluginClient(client),
+			callbacks: request.callbacks,
 		}
 		plugin, okCall := h.callRegister(ctx, loaded, item)
 		request.result <- pluginLoadResult{loaded: loaded, plugin: plugin, initialized: okCall}
@@ -461,6 +545,7 @@ func (h *Host) cleanupCanceledPluginLoad(id string, request *pluginLoadRequest) 
 		return
 	}
 	request.cleanupStarted = true
+	request.callbacks.detach()
 	h.mu.Unlock()
 
 	go func() {
@@ -479,6 +564,7 @@ func (h *Host) cleanupCanceledPluginLoadAndWait(id string, request *pluginLoadRe
 		return
 	}
 	request.cleanupStarted = true
+	request.callbacks.detach()
 	h.mu.Unlock()
 
 	result := <-request.result
@@ -498,6 +584,7 @@ func (h *Host) cleanupPluginLoad(id string, request *pluginLoadRequest, loaded *
 		return
 	}
 	request.cleanupStarted = true
+	request.callbacks.detach()
 	h.mu.Unlock()
 
 	h.finishPluginLoadCleanup(id, request, loaded)
@@ -513,6 +600,7 @@ func (h *Host) cleanupPluginLoadAndWait(id string, request *pluginLoadRequest, l
 		return
 	}
 	request.cleanupStarted = true
+	request.callbacks.detach()
 	h.mu.Unlock()
 
 	h.discardLoadedPlugin(loaded)
@@ -530,18 +618,25 @@ func (h *Host) clearLoadingRequest(id string, request *pluginLoadRequest) {
 	if h == nil || request == nil {
 		return
 	}
+	request.callbacks.detach()
+	request.callbacks.wait()
 	h.mu.Lock()
 	if h.loading[id] == request {
 		delete(h.loading, id)
+		if request.done != nil {
+			close(request.done)
+		}
 	}
 	h.mu.Unlock()
 }
 
 func (h *Host) discardLoadedPlugin(loaded *loadedPlugin) {
-	if loaded == nil || loaded.client == nil {
+	if loaded == nil {
 		return
 	}
+	loaded.callbacks.detach()
 	shutdownPluginClient(context.Background(), loaded.client)
+	loaded.callbacks.wait()
 }
 
 func (h *Host) withLoadedPluginFallbacks(files []pluginFile, items map[string]runtimeItemConfig, desired map[string]string) []pluginFile {
@@ -601,22 +696,96 @@ func (h *Host) UnloadPluginContext(ctx context.Context, id string) bool {
 	}
 	defer h.unlockApply()
 
-	targets := make([]pluginUnloadTarget, 0)
 	h.mu.Lock()
-	lp := h.loaded[id]
-	if lp != nil {
-		targets = append(targets, pluginUnloadTarget{id: lp.id, name: lp.name, path: lp.path, version: lp.version, client: lp.client})
-	}
-	for _, retired := range h.retired[id] {
-		if retired == nil {
-			continue
-		}
-		targets = append(targets, pluginUnloadTarget{id: retired.id, name: retired.name, path: retired.path, version: retired.version, client: retired.client})
-	}
-	if len(targets) == 0 {
-		h.mu.Unlock()
+	shutdown, records := h.detachPluginLocked(id)
+	h.mu.Unlock()
+	if shutdown == nil {
 		return false
 	}
+	h.refreshThinkingProviders(records)
+	h.RegisterFrontendAuthProviders()
+	h.startPluginShutdown(id, shutdown)
+	_ = waitPluginCompletion(ctx, shutdown.done)
+	return true
+}
+
+// StopPlugin explicitly stops a disabled plugin without deleting its binaries or
+// persistent cache. Unlike UnloadPluginContext's detach result, nil acknowledges
+// completed shutdown of every generation. Cancellation stops waiting, not cleanup;
+// the plugin remains busy/conflicting until cleanup actually finishes.
+// Missing configuration, enabled:nil, and a global plugins disable are not an
+// explicit per-plugin disable and do not authorize this operation.
+func (h *Host) StopPlugin(ctx context.Context, id string) error {
+	if h == nil {
+		return fmt.Errorf("plugin host is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if errContext := ctx.Err(); errContext != nil {
+		return errContext
+	}
+	id = strings.TrimSpace(id)
+	if !validPluginID(id) {
+		return fmt.Errorf("invalid plugin id")
+	}
+	if !h.lockApply(ctx) {
+		return ctx.Err()
+	}
+	defer h.unlockApply()
+	if errContext := ctx.Err(); errContext != nil {
+		return errContext
+	}
+
+	h.mu.Lock()
+	var item config.PluginInstanceConfig
+	if h.runtimeConfig != nil {
+		item = h.runtimeConfig.Plugins.Configs[id]
+	}
+	if item.Enabled == nil || *item.Enabled {
+		h.mu.Unlock()
+		return fmt.Errorf("plugin %s must be explicitly configured enabled: false before stop", id)
+	}
+	request := h.loading[id]
+	shutdown, records := h.detachPluginLocked(id)
+	h.mu.Unlock()
+
+	if request != nil {
+		h.cleanupCanceledPluginLoad(id, request)
+	}
+	if shutdown != nil {
+		h.refreshThinkingProviders(records)
+		h.RegisterFrontendAuthProviders()
+		h.startPluginShutdown(id, shutdown)
+		if errWait := waitPluginCompletion(ctx, shutdown.done); errWait != nil {
+			return errWait
+		}
+	}
+	if request != nil {
+		if errWait := waitPluginCompletion(ctx, request.done); errWait != nil {
+			return errWait
+		}
+	}
+	return nil
+}
+
+func (h *Host) detachPluginLocked(id string) (*pluginShutdown, []capabilityRecord) {
+	if shutdown := h.shuttingDown[id]; shutdown != nil {
+		return shutdown, h.Snapshot().records
+	}
+	var targets []pluginUnloadTarget
+	if lp := h.loaded[id]; lp != nil {
+		targets = append(targets, unloadTarget(lp))
+	}
+	for _, lp := range h.retired[id] {
+		if lp != nil {
+			targets = append(targets, unloadTarget(lp))
+		}
+	}
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	shutdown := h.trackPluginShutdownLocked(id, targets)
 	delete(h.loaded, id)
 	delete(h.retired, id)
 	delete(h.fused, id)
@@ -628,17 +797,53 @@ func (h *Host) UnloadPluginContext(ctx context.Context, id string) bool {
 	records, enabled := h.snapshotWithoutPluginLocked(id)
 	h.removePluginRuntimeStateLocked(id)
 	h.snapshot.Store(&Snapshot{enabled: enabled, records: records})
-	h.mu.Unlock()
+	return shutdown, records
+}
 
-	h.refreshThinkingProviders(records)
-	h.RegisterFrontendAuthProviders()
-	for _, target := range targets {
-		if target.client != nil {
-			shutdownPluginClient(ctx, target.client)
-		}
-		log.WithFields(pluginLogFields(target.id, target.name, target.version, target.path)).Info("pluginhost: plugin unloaded")
+func unloadTarget(lp *loadedPlugin) pluginUnloadTarget {
+	return pluginUnloadTarget{id: lp.id, name: lp.name, path: lp.path, version: lp.version, client: lp.client, callbacks: lp.callbacks}
+}
+
+func (h *Host) trackPluginShutdownLocked(id string, targets []pluginUnloadTarget) *pluginShutdown {
+	if shutdown := h.shuttingDown[id]; shutdown != nil {
+		return shutdown
 	}
-	return true
+	shutdown := &pluginShutdown{targets: targets, done: make(chan struct{})}
+	for _, target := range targets {
+		target.callbacks.detach()
+	}
+	h.shuttingDown[id] = shutdown
+	return shutdown
+}
+
+func (h *Host) startPluginShutdown(id string, shutdown *pluginShutdown) {
+	shutdown.once.Do(func() {
+		go func() {
+			for _, target := range shutdown.targets {
+				shutdownPluginClient(context.Background(), target.client)
+				target.callbacks.wait()
+				log.WithFields(pluginLogFields(target.id, target.name, target.version, target.path)).Info("pluginhost: plugin unloaded")
+			}
+			h.mu.Lock()
+			if h.shuttingDown[id] == shutdown {
+				delete(h.shuttingDown, id)
+			}
+			close(shutdown.done)
+			h.mu.Unlock()
+		}()
+	})
+}
+
+func waitPluginCompletion(ctx context.Context, done <-chan struct{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // ShutdownAll removes active plugin capabilities and closes all loaded dynamic libraries.
@@ -665,27 +870,26 @@ func (h *Host) ShutdownAllContext(ctx context.Context) {
 		if lp == nil || lp.client == nil {
 			continue
 		}
-		targets = append(targets, pluginUnloadTarget{
-			id:      lp.id,
-			name:    lp.name,
-			path:    lp.path,
-			version: lp.version,
-			client:  lp.client,
-		})
+		targets = append(targets, unloadTarget(lp))
 	}
 	for _, retiredPlugins := range h.retired {
 		for _, lp := range retiredPlugins {
 			if lp == nil || lp.client == nil {
 				continue
 			}
-			targets = append(targets, pluginUnloadTarget{
-				id:      lp.id,
-				name:    lp.name,
-				path:    lp.path,
-				version: lp.version,
-				client:  lp.client,
-			})
+			targets = append(targets, unloadTarget(lp))
 		}
+	}
+	byID := make(map[string][]pluginUnloadTarget)
+	for _, target := range targets {
+		byID[target.id] = append(byID[target.id], target)
+	}
+	for id, group := range byID {
+		h.trackPluginShutdownLocked(id, group)
+	}
+	shutdowns := make(map[string]*pluginShutdown, len(h.shuttingDown))
+	for id, shutdown := range h.shuttingDown {
+		shutdowns[id] = shutdown
 	}
 	h.loaded = make(map[string]*loadedPlugin)
 	h.retired = make(map[string][]*loadedPlugin)
@@ -710,9 +914,11 @@ func (h *Host) ShutdownAllContext(ctx context.Context) {
 	for id, request := range loading {
 		h.cleanupCanceledPluginLoad(id, request)
 	}
-	for _, target := range targets {
-		shutdownPluginClient(ctx, target.client)
-		log.WithFields(pluginLogFields(target.id, target.name, target.version, target.path)).Info("pluginhost: plugin unloaded")
+	for id, shutdown := range shutdowns {
+		h.startPluginShutdown(id, shutdown)
+	}
+	for _, shutdown := range shutdowns {
+		_ = waitPluginCompletion(ctx, shutdown.done)
 	}
 }
 
@@ -763,6 +969,7 @@ func (h *Host) retireLoadedPluginLocked(lp *loadedPlugin) {
 	if h == nil || lp == nil {
 		return
 	}
+	lp.callbacks.detach()
 	h.retired[lp.id] = append(h.retired[lp.id], lp)
 }
 

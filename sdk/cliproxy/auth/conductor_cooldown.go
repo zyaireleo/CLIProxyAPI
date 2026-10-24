@@ -22,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 )
 
 var quotaCooldownDisabled atomic.Bool
@@ -153,6 +154,10 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 		cfg = &internalconfig.Config{}
 	} else {
 		cfg = cfg.CloneForRuntime()
+	}
+	if err := cfg.ValidateNativeQuota(); err != nil {
+		log.WithError(err).Warn("rejected invalid native quota config snapshot")
+		return false
 	}
 	m.mu.RLock()
 	oldCooldownStore := m.cooldownStore
@@ -779,6 +784,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 	}
+	m.recordNativeQuotaResult(ctx, result)
 	modelKey := canonicalModelKey(result.Model)
 
 	var authSnapshot *Auth

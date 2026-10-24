@@ -22,9 +22,9 @@ func (m *Manager) SetPluginScheduler(scheduler PluginScheduler) {
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	m.pluginScheduler = scheduler
-	m.mu.Unlock()
+	if err := m.setNativeQuotaPluginScheduler(scheduler); err != nil {
+		logEntryWithRequestID(context.Background()).WithError(err).Warn("rejected plugin scheduler replacement during native quota enforcement")
+	}
 }
 
 func (m *Manager) hasPluginScheduler() bool {
@@ -552,6 +552,9 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 	for _, candidate := range auths {
 		checkModel := m.selectionModelForAuth(candidate, routeModel)
 		blocked, reason, next := isAuthBlockedForModel(candidate, checkModel, now)
+		if !blocked && !m.nativeQuotaEligible(candidate, routeModel, now) {
+			continue
+		}
 		if !blocked {
 			priority := authPriority(candidate)
 			availableByPriority[priority] = append(availableByPriority[priority], candidate)
@@ -615,6 +618,7 @@ func (m *Manager) availableAuthsForSelector(selector Selector, auths []*Auth, pr
 		if err != nil {
 			return nil, nil, err
 		}
+		priorityAuths, _ = m.nativeQuotaCandidates(priorityAuths, routeModel, now)
 		priorityAuths = cloneAuthSlice(priorityAuths)
 		return priorityAuths, priorityAuths, nil
 	}
@@ -624,6 +628,10 @@ func (m *Manager) availableAuthsForSelector(selector Selector, auths []*Auth, pr
 	allAuths, errAcross := m.availableAuthsForRouteModelAcrossPriorities(auths, provider, routeModel, now)
 	if errAcross != nil {
 		return nil, nil, errAcross
+	}
+	if quotaAuths, enforced := m.nativeQuotaCandidates(allAuths, routeModel, now); enforced {
+		quotaAuths = cloneAuthSlice(quotaAuths)
+		return quotaAuths, quotaAuths, nil
 	}
 	allAuths = cloneAuthSlice(allAuths)
 
@@ -910,6 +918,9 @@ func builtinSchedulerStrategy(delegate string) (schedulerStrategy, bool) {
 
 func (m *Manager) pickViaBuiltinScheduler(ctx context.Context, strategy schedulerStrategy, provider string, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, bool, error) {
 	if m == nil || m.scheduler == nil {
+		return nil, false, nil
+	}
+	if m.nativeQuotaFor(provider, true) != nil || m.nativeQuotaEnforcesAny(providers) {
 		return nil, false, nil
 	}
 	providerKey := strings.ToLower(strings.TrimSpace(provider))
@@ -1692,7 +1703,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		return nil, nil, errPick
 	}
 	if !handled {
-		selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
+		selectorCtx := selectorContextForAvailableAuths(m.nativeQuotaSelectorContext(ctx, model), selector, model)
 		selected, errPick = selector.Pick(selectorCtx, provider, selectionArgForSelector(selector, model), opts, selectorAuths)
 		if errPick != nil {
 			if isBuiltInSelector(selector) {
@@ -1705,6 +1716,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	if selected == nil {
 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
+	m.auditNativeQuotaSelection(ctx, selected, model, opts, tried)
 	authCopy := selected.Clone()
 	if !selected.indexAssigned {
 		m.mu.Lock()
@@ -1891,7 +1903,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = provider
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
 
-	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {
+	if m.nativeQuotaFor(provider, true) != nil || m.hasPluginScheduler() || !m.useSchedulerFastPath() {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
@@ -1930,6 +1942,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	if selected == nil {
 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
+	m.auditNativeQuotaSelection(ctx, selected, model, opts, tried)
 	authCopy := selected.Clone()
 	if !selected.indexAssigned {
 		m.mu.Lock()
@@ -2025,7 +2038,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		return nil, nil, "", errPick
 	}
 	if !handled {
-		selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
+		selectorCtx := selectorContextForAvailableAuths(m.nativeQuotaSelectorContext(ctx, model), selector, model)
 		selected, errPick = selector.Pick(selectorCtx, "mixed", selectionArgForSelector(selector, model), opts, selectorAuths)
 		if errPick != nil {
 			if isBuiltInSelector(selector) {
@@ -2043,6 +2056,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	if !okExecutor {
 		return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
+	m.auditNativeQuotaSelection(ctx, selected, model, opts, tried)
 	authCopy := selected.Clone()
 	if !selected.indexAssigned {
 		m.mu.Lock()
@@ -2063,7 +2077,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = "mixed"
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
 
-	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {
+	if m.nativeQuotaEnforcesAny(providers) || m.hasPluginScheduler() || !m.useSchedulerFastPath() {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
 
@@ -2130,6 +2144,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	if !okExecutor {
 		return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
+	m.auditNativeQuotaSelection(ctx, selected, model, opts, tried)
 	authCopy := selected.Clone()
 	if !selected.indexAssigned {
 		m.mu.Lock()

@@ -1341,7 +1341,7 @@ func shouldAttemptAntigravityCreditsFallback(m *Manager, lastErr error, provider
 		"status":    status,
 		"providers": providers,
 	}).Debug("shouldAttemptAntigravityCreditsFallback")
-	if m == nil || lastErr == nil || m.HomeEnabled() {
+	if m == nil || lastErr == nil || m.HomeEnabled() || m.nativeQuotaFor("antigravity", true) != nil {
 		return false
 	}
 	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)

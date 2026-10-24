@@ -243,6 +243,20 @@ quota-exceeded:
   switch-preview-model: true # Whether to automatically switch to a preview model when a quota is exceeded
   antigravity-credits: true # Whether to use credits as last-resort fallback when all free-tier auths are exhausted for Claude models
 
+# Native quota policy is opt-in and requires explicit handoff from legacy quota plugins.
+# Queue waiting is bounded separately from generation/stream lifetimes.
+native-quota:
+  mode: off # off, shadow, enforce
+  providers: [antigravity, codex]
+  refresh-concurrency: 2
+  antigravity-interval: 5m
+  codex-interval: 15m
+  refresh-min-interval: 30s
+  max-wait: 2s
+  max-in-flight: 4
+  unknown-max-in-flight: 1
+  queue-limit: 64
+
 # Routing strategy for selecting credentials when multiple match.
 routing:
   strategy: "round-robin" # round-robin (default), weighted-round-robin, fill-first

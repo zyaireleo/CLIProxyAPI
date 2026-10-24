@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -1748,8 +1751,8 @@ func TestHostUnloadPluginContextDetachesBlockedCall(t *testing.T) {
 	if ok := waitForHostTestBool(t, unloadDone, "contextual unload"); !ok {
 		t.Fatal("UnloadPluginContext() = false, want true after detaching runtime")
 	}
-	if h.PluginBusy("alpha") {
-		t.Fatal("PluginBusy(alpha) = true after contextual unload detached runtime")
+	if !h.PluginBusy("alpha") {
+		t.Fatal("PluginBusy(alpha) = false before contextual unload cleanup completed")
 	}
 	if got := client.shutdown.Load(); got != 0 {
 		t.Fatalf("shutdown calls before blocked plugin call exits = %d, want 0", got)
@@ -2254,6 +2257,419 @@ func TestHostShutdownAllRetainsBlockedLoadTokenUntilCleanup(t *testing.T) {
 	}
 	if h.PluginBusy("alpha") {
 		t.Fatal("PluginBusy(alpha) = true after physical shutdown returned")
+	}
+}
+
+func TestHostNativeQuotaHotDisableAndNonDestructiveStop(t *testing.T) {
+	const ag = "antigravity-priority"
+	const codex = "codex-quota-scheduler"
+	loader := newTestSymbolLoader()
+	for _, id := range []string{ag, codex, "other"} {
+		loader.lookups[id] = newTestSymbolLookup(&testPlugin{registerResult: validTestPlugin(id), reconfigureResult: validTestPlugin(id)})
+	}
+	h := NewForTest(loader)
+	t.Cleanup(h.ShutdownAll)
+	cfg := &config.Config{Plugins: config.PluginsConfig{Enabled: true, Dir: makePluginDir(t, ag, codex, "other"), Configs: enabledPluginConfigs(ag, codex, "other")}}
+	h.ApplyConfig(context.Background(), cfg)
+
+	// Hot disable only removes routing capabilities. It must not imply shutdown.
+	disabled := disabledQuotaTestConfig(cfg, ag, codex)
+	h.ApplyConfig(context.Background(), disabled)
+	if got := h.NativeQuotaConflicts(nil); !slices.Equal(got, []string{ag, codex}) {
+		t.Fatalf("conflicts after hot disable = %v", got)
+	}
+	if got := h.NativeQuotaConflicts([]string{" CODEX ", "codex"}); !slices.Equal(got, []string{codex}) {
+		t.Fatalf("provider-scoped conflicts = %v", got)
+	}
+	if got := h.NativeQuotaConflicts([]string{"unrelated"}); len(got) != 0 {
+		t.Fatalf("unrelated provider conflicts = %v", got)
+	}
+	if len(h.Snapshot().records) != 1 || h.Snapshot().records[0].id != "other" {
+		t.Fatalf("hot disable snapshot = %+v", h.Snapshot().records)
+	}
+	for id, lookup := range loader.lookups {
+		if lookup.shutdownCalls != 0 {
+			t.Fatalf("hot disable unexpectedly shut down %s", id)
+		}
+	}
+	assertQuotaOwnershipBlocked(t, h, []string{"antigravity"})
+
+	cache := filepath.Join(cfg.Plugins.Dir, "quota-cache.json")
+	cacheData := []byte(`{"preserved":true}`)
+	if errWrite := os.WriteFile(cache, cacheData, 0o600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	if errStop := h.StopPlugin(context.Background(), ag); errStop != nil {
+		t.Fatal(errStop)
+	}
+	if got := h.NativeQuotaConflicts(nil); !slices.Equal(got, []string{codex}) {
+		t.Fatalf("conflicts after AG stop = %v", got)
+	}
+	if loader.lookups[ag].shutdownCalls != 1 || loader.lookups[codex].shutdownCalls != 0 || loader.lookups["other"].shutdownCalls != 0 {
+		t.Fatal("stop shut down the wrong plugin")
+	}
+	if !h.PluginLoaded("other") || len(h.Snapshot().records) != 1 {
+		t.Fatal("stop removed unrelated plugin capabilities")
+	}
+	if errStop := h.StopPlugin(context.Background(), ag); errStop != nil || loader.lookups[ag].shutdownCalls != 1 {
+		t.Fatalf("idempotent stop = %v", errStop)
+	}
+	if errStop := h.StopPlugin(context.Background(), codex); errStop != nil {
+		t.Fatal(errStop)
+	}
+	for _, id := range []string{ag, codex, "other"} {
+		path := filepath.Join(cfg.Plugins.Dir, runtime.GOOS, runtime.GOARCH, id+pluginExtension(runtime.GOOS))
+		if data, errRead := os.ReadFile(path); errRead != nil || string(data) != "x" {
+			t.Fatalf("plugin binary changed during stop: %s, %v", path, errRead)
+		}
+	}
+	if data, errRead := os.ReadFile(cache); errRead != nil || !bytes.Equal(data, cacheData) {
+		t.Fatalf("cache changed during stop: %q, %v", data, errRead)
+	}
+	if got := h.NativeQuotaConflicts(nil); len(got) != 0 {
+		t.Fatalf("conflicts after completed stops = %v", got)
+	}
+}
+
+func TestHostStopPluginRequiresExplicitDisable(t *testing.T) {
+	const id = "antigravity-priority"
+	loader := newTestSymbolLoader()
+	lookup := newTestSymbolLookup(&testPlugin{registerResult: validTestPlugin(id), reconfigureResult: validTestPlugin(id)})
+	loader.lookups[id] = lookup
+	h := NewForTest(loader)
+	t.Cleanup(h.ShutdownAll)
+	cfg := &config.Config{Plugins: config.PluginsConfig{Enabled: true, Dir: makePluginDir(t, id), Configs: enabledPluginConfigs(id)}}
+	h.ApplyConfig(context.Background(), cfg)
+	for _, test := range []struct {
+		name string
+		cfg  *config.Config
+	}{
+		{"enabled", cfg},
+		{"global disable", &config.Config{Plugins: config.PluginsConfig{Configs: enabledPluginConfigs(id)}}},
+		{"missing item", &config.Config{}},
+		{"nil enabled", &config.Config{Plugins: config.PluginsConfig{Configs: map[string]config.PluginInstanceConfig{id: {}}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h.ApplyConfig(context.Background(), test.cfg)
+			if errStop := h.StopPlugin(context.Background(), id); errStop == nil {
+				t.Fatal("stop accepted a plugin without explicit enabled:false")
+			}
+			if !h.PluginLoaded(id) || lookup.shutdownCalls != 0 {
+				t.Fatal("rejected stop changed plugin lifecycle")
+			}
+			assertQuotaOwnershipBlocked(t, h, nil)
+		})
+	}
+}
+
+func TestHostStopPluginCancellationRetainsConflictUntilActualShutdown(t *testing.T) {
+	const id = "antigravity-priority"
+	callStarted, callRelease := make(chan struct{}), make(chan struct{})
+	shutdownStarted, shutdownRelease := make(chan struct{}), make(chan struct{})
+	var releaseCall, releaseShutdown sync.Once
+	client := &lifecycleTestClient{
+		call: func(_ context.Context, method string, _ []byte) ([]byte, error) {
+			if method == pluginabi.MethodPluginRegister {
+				return lifecycleRegistrationResult(validTestPlugin(id))
+			}
+			close(callStarted)
+			<-callRelease
+			return marshalRPCResult(rpcEmptyResponse{})
+		},
+		shutdown: func() { close(shutdownStarted); <-shutdownRelease },
+	}
+	loader := &sequencePluginLoader{clients: []pluginClient{client}}
+	h := NewForTest(loader)
+	t.Cleanup(func() {
+		releaseCall.Do(func() { close(callRelease) })
+		releaseShutdown.Do(func() { close(shutdownRelease) })
+		h.ShutdownAll()
+	})
+	cfg := &config.Config{Plugins: config.PluginsConfig{Enabled: true, Dir: makePluginDir(t, id), Configs: enabledPluginConfigs(id)}}
+	h.ApplyConfig(context.Background(), cfg)
+	h.mu.Lock()
+	loaded := h.loaded[id]
+	h.mu.Unlock()
+	go func() { _, _ = loaded.client.Call(context.Background(), pluginabi.MethodUsageHandle, nil) }()
+	waitForHostTestSignal(t, callStarted, "active legacy call")
+	disabled := disabledQuotaTestConfig(cfg, id)
+	h.ApplyConfig(context.Background(), disabled)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stopped := make(chan error, 1)
+	go func() { stopped <- h.StopPlugin(ctx, id) }()
+	waitForQuotaTestCondition(t, func() bool { return !h.PluginLoaded(id) }, "runtime detachment")
+	cancel()
+	if errStop := waitForQuotaTestError(t, stopped); !errors.Is(errStop, context.Canceled) {
+		t.Fatalf("canceled stop = %v", errStop)
+	}
+	if !h.PluginBusy(id) || client.shutdownCalls.Load() != 0 {
+		t.Fatal("stop acknowledged a still-active legacy call")
+	}
+	assertQuotaOwnershipBlocked(t, h, nil)
+	// A stale enabled config cannot load a second client during detached cleanup.
+	h.ApplyConfig(context.Background(), cfg)
+	if loader.calls != 1 {
+		t.Fatal("reloaded while previous generation was shutting down")
+	}
+	h.ApplyConfig(context.Background(), disabled)
+	releaseCall.Do(func() { close(callRelease) })
+	waitForHostTestSignal(t, shutdownStarted, "actual shutdown start")
+	assertQuotaOwnershipBlocked(t, h, nil)
+
+	go func() { stopped <- h.StopPlugin(context.Background(), id) }()
+	select {
+	case errStop := <-stopped:
+		t.Fatalf("stop returned before shutdown completion: %v", errStop)
+	case <-time.After(20 * time.Millisecond):
+	}
+	releaseShutdown.Do(func() { close(shutdownRelease) })
+	if errStop := waitForQuotaTestError(t, stopped); errStop != nil {
+		t.Fatal(errStop)
+	}
+	if h.PluginBusy(id) || len(h.NativeQuotaConflicts(nil)) != 0 || client.shutdownCalls.Load() != 1 {
+		t.Fatal("shutdown completion was not acknowledged exactly once")
+	}
+	release, errAcquire := h.AcquireNativeQuotaOwnership(nil)
+	if errAcquire != nil {
+		t.Fatal(errAcquire)
+	}
+	release()
+}
+
+func TestHostNativeQuotaTracksCanceledLoadCleanup(t *testing.T) {
+	const id = "codex-quota-scheduler"
+	client := &blockingInitializationClient{
+		started: make(chan struct{}), release: make(chan struct{}), registration: validTestPlugin(id),
+		shutdownStarted: make(chan struct{}), shutdownRelease: make(chan struct{}),
+	}
+	h := NewForTest(&blockingHostCallLoader{client: client})
+	var releaseRegister, releaseShutdown sync.Once
+	t.Cleanup(func() {
+		releaseRegister.Do(func() { close(client.release) })
+		releaseShutdown.Do(func() { close(client.shutdownRelease) })
+		h.ShutdownAll()
+	})
+	cfg := &config.Config{Plugins: config.PluginsConfig{Enabled: true, Dir: makePluginDir(t, id), Configs: enabledPluginConfigs(id)}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	applied := make(chan struct{})
+	go func() { h.ApplyConfig(ctx, cfg); close(applied) }()
+	waitForHostTestSignal(t, client.started, "legacy registration")
+	assertQuotaOwnershipBlocked(t, h, []string{"codex"})
+	cancel()
+	waitForHostTestSignal(t, applied, "canceled legacy load")
+	h.ApplyConfig(context.Background(), disabledQuotaTestConfig(cfg, id))
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer stopCancel()
+	if errStop := h.StopPlugin(stopCtx, id); !errors.Is(errStop, context.DeadlineExceeded) {
+		t.Fatalf("stop while load blocked = %v", errStop)
+	}
+	assertQuotaOwnershipBlocked(t, h, nil)
+	releaseRegister.Do(func() { close(client.release) })
+	waitForHostTestSignal(t, client.shutdownStarted, "canceled load shutdown")
+	assertQuotaOwnershipBlocked(t, h, nil)
+	stopped := make(chan error, 1)
+	go func() { stopped <- h.StopPlugin(context.Background(), id) }()
+	releaseShutdown.Do(func() { close(client.shutdownRelease) })
+	if errStop := waitForQuotaTestError(t, stopped); errStop != nil {
+		t.Fatal(errStop)
+	}
+	if len(h.NativeQuotaConflicts(nil)) != 0 {
+		t.Fatal("completed canceled load retained a conflict")
+	}
+}
+
+func TestHostNativeQuotaTracksUnloadAndShutdownAll(t *testing.T) {
+	for _, all := range []bool{false, true} {
+		t.Run(fmt.Sprintf("all=%t", all), func(t *testing.T) {
+			const id = "antigravity-priority"
+			started, release := make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			client := &lifecycleTestClient{
+				call: func(context.Context, string, []byte) ([]byte, error) {
+					return lifecycleRegistrationResult(validTestPlugin(id))
+				},
+				shutdown: func() { close(started); <-release },
+			}
+			h := NewForTest(&blockingHostCallLoader{client: client})
+			t.Cleanup(func() { releaseOnce.Do(func() { close(release) }); h.ShutdownAll() })
+			cfg := &config.Config{Plugins: config.PluginsConfig{Enabled: true, Dir: makePluginDir(t, id), Configs: enabledPluginConfigs(id)}}
+			h.ApplyConfig(context.Background(), cfg)
+			h.ApplyConfig(context.Background(), disabledQuotaTestConfig(cfg, id))
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if all {
+				h.ShutdownAllContext(ctx)
+			} else if !h.UnloadPluginContext(ctx, id) {
+				t.Fatal("unload did not detach")
+			}
+			waitForHostTestSignal(t, started, "detached shutdown")
+			assertQuotaOwnershipBlocked(t, h, nil)
+			releaseOnce.Do(func() { close(release) })
+			if errStop := h.StopPlugin(context.Background(), id); errStop != nil {
+				t.Fatal(errStop)
+			}
+			if len(h.NativeQuotaConflicts(nil)) != 0 {
+				t.Fatal("completed detached shutdown retained a conflict")
+			}
+		})
+	}
+}
+
+func TestHostNativeQuotaOwnershipLeaseBlocksStaleConfigReload(t *testing.T) {
+	const ag, codex = "antigravity-priority", "codex-quota-scheduler"
+	loader := newTestSymbolLoader()
+	for _, id := range []string{ag, codex, "other"} {
+		loader.lookups[id] = newTestSymbolLookup(&testPlugin{registerResult: validTestPlugin(id), reconfigureResult: validTestPlugin(id)})
+	}
+	h := NewForTest(loader)
+	t.Cleanup(h.ShutdownAll)
+	releaseAG, errAcquire := h.AcquireNativeQuotaOwnership([]string{" ANTIGRAVITY "})
+	if errAcquire != nil {
+		t.Fatal(errAcquire)
+	}
+	defer releaseAG()
+	releaseBoth, errAcquire := h.AcquireNativeQuotaOwnership(nil)
+	if errAcquire != nil {
+		t.Fatal(errAcquire)
+	}
+	defer releaseBoth()
+	if len(h.NativeQuotaConflicts(nil)) != 0 {
+		t.Fatal("native ownership lease conflicts with itself")
+	}
+	cfg := &config.Config{Plugins: config.PluginsConfig{Enabled: true, Dir: makePluginDir(t, ag, codex, "other"), Configs: enabledPluginConfigs(ag, codex, "other")}}
+	h.ApplyConfig(context.Background(), cfg) // No native quota mode in this stale config.
+	if h.PluginLoaded(ag) || h.PluginLoaded(codex) || !h.PluginLoaded("other") {
+		t.Fatal("stale config bypassed native ownership or blocked unrelated plugin")
+	}
+	releaseBoth()
+	releaseBoth() // Releasing twice cannot consume another lease.
+	h.ApplyConfig(context.Background(), cfg)
+	if h.PluginLoaded(ag) || !h.PluginLoaded(codex) {
+		t.Fatal("provider-scoped reference counts were not preserved")
+	}
+	releaseAG()
+	h.ApplyConfig(context.Background(), cfg)
+	if !h.PluginLoaded(ag) {
+		t.Fatal("legacy plugin could not reload after all ownership leases released")
+	}
+}
+
+func TestHostNativeQuotaOwnershipAndConcurrentLoadAreExclusive(t *testing.T) {
+	const id = "codex-quota-scheduler"
+	cfg := &config.Config{Plugins: config.PluginsConfig{Enabled: true, Dir: makePluginDir(t, id), Configs: enabledPluginConfigs(id)}}
+	for range 40 {
+		h := NewForTest(&blockingHostCallLoader{client: &lateLoadClient{registration: validTestPlugin(id)}})
+		start, applied := make(chan struct{}), make(chan struct{})
+		go func() {
+			<-start
+			h.ApplyConfig(context.Background(), cfg)
+			close(applied)
+		}()
+		close(start)
+		release, errAcquire := h.AcquireNativeQuotaOwnership([]string{"codex"})
+		waitForHostTestSignal(t, applied, "concurrent legacy load")
+		if errAcquire == nil {
+			if h.PluginBusy(id) {
+				release()
+				h.ShutdownAll()
+				t.Fatal("successful native ownership overlapped a legacy load")
+			}
+			release()
+		} else if !h.PluginLoaded(id) {
+			h.ShutdownAll()
+			t.Fatalf("ownership rejected without a live legacy owner: %v", errAcquire)
+		}
+		h.ShutdownAll()
+	}
+}
+
+func TestHostStopPluginCanceledBeforeMutationLeavesOwnerLoaded(t *testing.T) {
+	const id = "antigravity-priority"
+	client := &lateLoadClient{registration: validTestPlugin(id)}
+	h := NewForTest(&blockingHostCallLoader{client: client})
+	t.Cleanup(h.ShutdownAll)
+	cfg := &config.Config{Plugins: config.PluginsConfig{Enabled: true, Dir: makePluginDir(t, id), Configs: enabledPluginConfigs(id)}}
+	h.ApplyConfig(context.Background(), cfg)
+	h.ApplyConfig(context.Background(), disabledQuotaTestConfig(cfg, id))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if errStop := h.StopPlugin(ctx, id); !errors.Is(errStop, context.Canceled) {
+		t.Fatalf("pre-canceled stop = %v", errStop)
+	}
+	if !h.PluginLoaded(id) || client.shutdown.Load() != 0 {
+		t.Fatal("pre-canceled stop mutated lifecycle")
+	}
+	assertQuotaOwnershipBlocked(t, h, nil)
+}
+
+func TestHostNativeQuotaEnforceConfigRefusesOnlyCoveredLegacyLoad(t *testing.T) {
+	const ag, codex = "antigravity-priority", "codex-quota-scheduler"
+	for _, providers := range [][]string{nil, {"codex"}} {
+		t.Run(fmt.Sprint(providers), func(t *testing.T) {
+			loader := newTestSymbolLoader()
+			for _, id := range []string{ag, codex, "other"} {
+				loader.lookups[id] = newTestSymbolLookup(&testPlugin{registerResult: validTestPlugin(id), reconfigureResult: validTestPlugin(id)})
+			}
+			h := NewForTest(loader)
+			t.Cleanup(h.ShutdownAll)
+			cfg := &config.Config{
+				NativeQuota: config.NativeQuotaConfig{Mode: "enforce", Providers: providers},
+				Plugins:     config.PluginsConfig{Enabled: true, Dir: makePluginDir(t, ag, codex, "other"), Configs: enabledPluginConfigs(ag, codex, "other")},
+			}
+			h.ApplyConfig(context.Background(), cfg)
+			if h.PluginLoaded(codex) || !h.PluginLoaded("other") || h.PluginLoaded(ag) != (len(providers) != 0) {
+				t.Fatal("enforce load refusal did not respect provider scope")
+			}
+		})
+	}
+}
+
+func disabledQuotaTestConfig(cfg *config.Config, ids ...string) *config.Config {
+	clone := *cfg
+	clone.Plugins.Configs = make(map[string]config.PluginInstanceConfig, len(cfg.Plugins.Configs))
+	for id, item := range cfg.Plugins.Configs {
+		clone.Plugins.Configs[id] = item
+	}
+	for _, id := range ids {
+		disabled := false
+		clone.Plugins.Configs[id] = config.PluginInstanceConfig{Enabled: &disabled}
+	}
+	return &clone
+}
+
+func assertQuotaOwnershipBlocked(t *testing.T, h *Host, providers []string) {
+	t.Helper()
+	if got := h.NativeQuotaConflicts(providers); len(got) == 0 {
+		t.Fatal("missing live legacy owner conflict")
+	}
+	if release, errAcquire := h.AcquireNativeQuotaOwnership(providers); errAcquire == nil {
+		release()
+		t.Fatal("native quota acquired ownership before completed shutdown")
+	}
+}
+
+func waitForQuotaTestCondition(t *testing.T, condition func() bool, name string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for !condition() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !condition() {
+		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
+func waitForQuotaTestError(t *testing.T, result <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for lifecycle operation")
+		return nil
 	}
 }
 

@@ -941,7 +941,13 @@ func (e *AntigravityExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 	if ctx == nil {
 		ctx = req.Context()
 	}
-	httpReq := req.WithContext(ctx)
+	httpReq := req.Clone(ctx)
+	quotaRequest := cliproxyauth.IsNativeQuotaRequest(ctx)
+	if quotaRequest {
+		if errValidate := helps.ValidateNativeQuotaRequest(httpReq, antigravityAuthType); errValidate != nil {
+			return nil, errValidate
+		}
+	}
 
 	// Connection management is a Request field, not a header, so the header
 	// whitelist below cannot strip it. An inbound "Connection: close" makes Go's
@@ -963,6 +969,11 @@ func (e *AntigravityExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 	}
 	// Content-Length is managed automatically by Go's http.Client from the Body
 	httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
+	if quotaRequest {
+		httpReq.Host = ""
+		httpReq.Header.Set("User-Agent", helps.NativeAntigravityQuotaUserAgent)
+		httpReq.Header.Set("Accept", "application/json")
+	}
 
 	// Inject Authorization: Bearer <token>
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
@@ -970,5 +981,8 @@ func (e *AntigravityExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 	}
 
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
+	if quotaRequest {
+		httpClient = helps.NativeQuotaHTTPClient(httpClient)
+	}
 	return httpClient.Do(httpReq)
 }
