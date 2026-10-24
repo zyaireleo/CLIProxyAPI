@@ -77,6 +77,69 @@ func TestConfigWatchSurvivesReplacementAndAppliesGeminiBudget(t *testing.T) {
 	}
 }
 
+// Force the next replacement to land after LoadConfig has consumed budget 4 but
+// before that reload finishes. No scheduler or filesystem event timing is needed
+// to reproduce the hash acknowledgement race; the test above covers fsnotify.
+func TestConfigReloadDoesNotAcknowledgeReplacementDuringCallback(t *testing.T) {
+	root := t.TempDir()
+	authDir := filepath.Join(root, "auth")
+	if err := os.Mkdir(authDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "config.yaml")
+	write := func(budget int, replace bool) {
+		t.Helper()
+		cfg := &config.Config{
+			Port:                         8080,
+			AuthDir:                      authDir,
+			CredentialInFlight:           config.DefaultCredentialInFlightConfig(),
+			AntigravityGeminiMaxAttempts: budget,
+		}
+		data, err := yaml.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target := path
+		if replace {
+			target += ".next"
+		}
+		if err := os.WriteFile(target, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if replace {
+			if runtime.GOOS == "windows" {
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Rename(target, path); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	write(4, false)
+	var applied []int
+	w := &Watcher{
+		configPath: path,
+		authDir:    authDir,
+		reloadCallback: func(current *config.Config) {
+			applied = append(applied, current.AntigravityGeminiMaxAttempts)
+			if len(applied) == 1 {
+				write(2, true)
+			}
+		},
+	}
+	w.ReloadConfigIfChanged()
+	w.ReloadConfigIfChanged()
+	if len(applied) != 2 || applied[0] != 4 || applied[1] != 2 {
+		t.Fatalf("replacement during reload was not applied: got %v, want [4 2]", applied)
+	}
+	w.ReloadConfigIfChanged()
+	if len(applied) != 2 {
+		t.Fatalf("unchanged replacement should be skipped, got %v", applied)
+	}
+}
+
 func TestGeminiBudgetAppearsInConfigDiff(t *testing.T) {
 	changes := diff.BuildConfigChangeDetails(&config.Config{}, &config.Config{AntigravityGeminiMaxAttempts: 4})
 	if !strings.Contains(strings.Join(changes, "\n"), "antigravity-gemini-max-attempts: 0 -> 4") {

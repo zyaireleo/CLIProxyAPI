@@ -42,6 +42,8 @@ jobs:
             -o "$staging/cli-proxy-api" ./cmd/server
           file "$staging/cli-proxy-api"
           ldd "$staging/cli-proxy-api"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -ldflags="-s -w" \
+            -o "$staging/cpa-release-bridge" ./cmd/cpa-release-bridge
           export STAGING="$staging"
           python3 - <<'PY'
           import hashlib, json, os, pathlib, subprocess
@@ -57,8 +59,8 @@ jobs:
           }
           (root / 'BUILDINFO.json').write_text(json.dumps(info, indent=2) + '\n')
           PY
-          (cd "$staging" && sha256sum cli-proxy-api BUILDINFO.json > SHA256SUMS)
-          tar -C "$staging" -czf "${RUNNER_TEMP}/cpa-native-quota-${REVIEWED_SHA}.tar.gz" cli-proxy-api BUILDINFO.json SHA256SUMS
+          (cd "$staging" && sha256sum cli-proxy-api cpa-release-bridge BUILDINFO.json > SHA256SUMS)
+          tar -C "$staging" -czf "${RUNNER_TEMP}/cpa-native-quota-${REVIEWED_SHA}.tar.gz" cli-proxy-api cpa-release-bridge BUILDINFO.json SHA256SUMS
       - name: Upload candidate without deploying
         uses: actions/upload-artifact@v4
         with:

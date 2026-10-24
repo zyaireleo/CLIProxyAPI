@@ -71,15 +71,13 @@ func (w *Watcher) reloadConfigIfChanged() {
 	}
 	log.Infof("config file changed, reloading: %s", w.configPath)
 	if w.reloadConfig() {
-		finalHash := newHash
-		if updatedData, errRead := os.ReadFile(w.configPath); errRead == nil && len(updatedData) > 0 {
-			sumUpdated := sha256.Sum256(updatedData)
-			finalHash = hex.EncodeToString(sumUpdated[:])
-		} else if errRead != nil {
-			log.WithError(errRead).Debug("failed to compute updated config hash after reload")
-		}
+		// Do not acknowledge bytes read after the reload: a replacement can land
+		// while callbacks or auth refresh are running and has not been applied.
+		// Retain the pre-reload hash so its event still triggers a reload. If
+		// LoadConfig rewrites the file (e.g. hashes a secret), one extra reload
+		// is preferable to silently swallowing a concurrent configuration edit.
 		w.clientsMutex.Lock()
-		w.lastConfigHash = finalHash
+		w.lastConfigHash = newHash
 		w.clientsMutex.Unlock()
 		w.persistConfigAsync()
 	}
