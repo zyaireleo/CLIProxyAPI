@@ -56,7 +56,17 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	if errProject != nil {
 		return nil, errProject
 	}
+	safetyFourOff := e.cfg != nil && e.cfg.Antigravity.SafetyFourOff()
+	suppliedSafety := ""
+	if safetyFourOff {
+		if supplied := gjson.GetBytes(payload, "request.safetySettings"); supplied.Exists() && supplied.IsArray() {
+			suppliedSafety = supplied.Raw
+		}
+	}
 	payload = geminiToAntigravity(modelName, payload, projectID, derivedSessionIDs...)
+	if safetyFourOff {
+		payload = applyAntigravitySafetySettings(payload, suppliedSafety)
+	}
 
 	// Cap maxOutputTokens to model's max_completion_tokens from registry
 	if maxOut := gjson.GetBytes(payload, "request.generationConfig.maxOutputTokens"); maxOut.Exists() && maxOut.Type == gjson.Number {
@@ -516,6 +526,56 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, der
 		template, _ = sjson.DeleteBytes(template, "toolConfig")
 	}
 	return template
+}
+
+// antigravityAcceptedSafetyCategories are the safety categories the antigravity
+// endpoint accepts on every model, in wire order. HARM_CATEGORY_CIVIC_INTEGRITY
+// is excluded: its validator rejects that element for some flash-lite models
+// even though it appears in the category enum.
+var antigravityAcceptedSafetyCategories = []string{
+	"HARM_CATEGORY_HARASSMENT",
+	"HARM_CATEGORY_HATE_SPEECH",
+	"HARM_CATEGORY_SEXUALLY_EXPLICIT",
+	"HARM_CATEGORY_DANGEROUS_CONTENT",
+}
+
+// applyAntigravitySafetySettings implements antigravity safety-mode four_off after
+// geminiToAntigravity has stripped request.safetySettings. All four accepted
+// categories are sent with the caller's threshold when supplied (and valid) and
+// OFF otherwise, so Google applies no default filtering for any category.
+func applyAntigravitySafetySettings(payload []byte, supplied string) []byte {
+	caller := map[string]string{}
+	if supplied != "" {
+		for _, item := range gjson.Parse(supplied).Array() {
+			category := item.Get("category").String()
+			accepted := false
+			for _, ok := range antigravityAcceptedSafetyCategories {
+				if ok == category {
+					accepted = true
+					break
+				}
+			}
+			if !accepted {
+				continue
+			}
+			if threshold := item.Get("threshold").String(); threshold != "" {
+				caller[category] = threshold
+			}
+		}
+	}
+	settings := make([]map[string]string, 0, len(antigravityAcceptedSafetyCategories))
+	for _, category := range antigravityAcceptedSafetyCategories {
+		threshold, ok := caller[category]
+		if !ok {
+			threshold = "OFF"
+		}
+		settings = append(settings, map[string]string{"category": category, "threshold": threshold})
+	}
+	out, err := sjson.SetBytes(payload, "request.safetySettings", settings)
+	if err != nil {
+		return payload
+	}
+	return out
 }
 
 func generateRequestID() string {
