@@ -1,0 +1,32 @@
+{
+  "plugins": [
+    {
+      "id": "antigravity-priority",
+      "filename": "antigravity-priority-v1.2.20.so",
+      "sha256": "45bd67958cebd7e845d627b881a9b28bd2c9b8eda2a0aec52f2b519159b97cd4",
+      "archive_url": "https://github.com/ygq-future/antigravity-priority/releases/download/v1.2.20/antigravity-priority_1.2.20_linux_amd64.zip",
+      "archive_sha256": "c3d403d07a5102335cc463af98e6ef7b1ab4845221c977b4817b9f35f52b54f9"
+    },
+    {
+      "id": "codex-quota-scheduler",
+      "filename": "codex-quota-scheduler-v0.2.1.so",
+      "sha256": "cb719084a799361f81a938e034acfbb1c5d4acfdadc35b841b5928baeafd0e49",
+      "archive_url": "https://github.com/JefferyZhang2019/cpa-plugin-codex-quota-scheduler/releases/download/v0.2.1/codex-quota-scheduler_0.2.1_linux_amd64.zip",
+      "archive_sha256": "1d819d0eb595f717534b48e633d2a14c4f834ecfbc15e95ebf88916970b412a5"
+    },
+    {
+      "id": "codexcomp",
+      "filename": "codexcomp-v0.1.7.so",
+      "sha256": "ed9dfd4d12318cf502d317ed3b9e4abaf6a84933f25e9504db49d7d76d4fe19b",
+      "archive_url": "https://github.com/uf-hy/cpa-plugin-codexcomp/releases/download/v0.1.7/codexcomp_0.1.7_linux_amd64.zip",
+      "archive_sha256": "8191bc0e24f69fc2e58ad8aa3dc7d6d991402345cd39f1241debba7250cdb9ba"
+    },
+    {
+      "id": "usage-statistics",
+      "filename": "usage-statistics-v0.1.0.so",
+      "sha256": "f2f842045e344cf61680564ca17646320ec010fd79cdac5ba86d7a309a38c555",
+      "archive_url": "https://github.com/Fwindy/cpa-usage-statistics/releases/download/v0.1.0/usage-statistics_0.1.0_linux_amd64.zip",
+      "archive_sha256": "cca743dea96980633b7e296e4317a0d87737d566e41cbc98470f6e2ceb34fec3"
+    }
+  ]
+}

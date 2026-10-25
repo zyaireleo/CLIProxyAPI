@@ -1,0 +1,83 @@
+name: Verify plugin candidate
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/verify-plugin-candidate.yml'
+      - 'deploy/**'
+      - 'internal/pluginhost/**'
+      - 'internal/runtime/executor/**'
+      - 'go.mod'
+      - 'go.sum'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plugin-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: '1'
+      GOOS: linux
+      GOARCH: amd64
+      GOAMD64: v1
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.0'
+          cache: true
+      - name: Check validation scripts
+        run: |
+          bash -n deploy/build-plugin-candidate.sh
+          python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("deploy/plugin-smoke.py").read_text())'
+          PYTHONDONTWRITEBYTECODE=1 python3 deploy/test-plugin-smoke.py
+          if CGO_ENABLED=0 bash deploy/build-plugin-candidate.sh "$RUNNER_TEMP/rejected-candidate"; then
+            echo 'CGO=0 candidate was not rejected' >&2
+            exit 1
+          fi
+      - name: Test with the real Unix loader
+        run: go test ./...
+      - name: Build and verify production-compatible plugin candidate
+        run: bash deploy/build-plugin-candidate.sh "$RUNNER_TEMP/candidate"
+      - name: Download pinned public plugin archives
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/plugin-archives"
+          curl --proto '=https' --proto-redir '=https' -fL --retry 2 --max-time 120 \
+            https://github.com/ygq-future/antigravity-priority/releases/download/v1.2.20/antigravity-priority_1.2.20_linux_amd64.zip \
+            -o "$RUNNER_TEMP/plugin-archives/antigravity-priority.zip"
+          curl --proto '=https' --proto-redir '=https' -fL --retry 2 --max-time 120 \
+            https://github.com/JefferyZhang2019/cpa-plugin-codex-quota-scheduler/releases/download/v0.2.1/codex-quota-scheduler_0.2.1_linux_amd64.zip \
+            -o "$RUNNER_TEMP/plugin-archives/codex-quota-scheduler.zip"
+          curl --proto '=https' --proto-redir '=https' -fL --retry 2 --max-time 120 \
+            https://github.com/uf-hy/cpa-plugin-codexcomp/releases/download/v0.1.7/codexcomp_0.1.7_linux_amd64.zip \
+            -o "$RUNNER_TEMP/plugin-archives/codexcomp.zip"
+          curl --proto '=https' --proto-redir '=https' -fL --retry 2 --max-time 120 \
+            https://github.com/Fwindy/cpa-usage-statistics/releases/download/v0.1.0/usage-statistics_0.1.0_linux_amd64.zip \
+            -o "$RUNNER_TEMP/plugin-archives/usage-statistics.zip"
+          python3 deploy/plugin-smoke.py --extract-archives "$RUNNER_TEMP/plugin-archives" --plugins "$RUNNER_TEMP/plugins"
+      - name: Test all four plugins without network or credentials
+        run: |
+          sudo unshare --net --pid --fork --mount-proc bash -c '
+            set -euo pipefail
+            ip link set lo up
+            python3 "$1/deploy/plugin-smoke.py" \
+              --binary "$2/candidate/cli-proxy-api" \
+              --plugins "$2/plugins" \
+              --workdir "$2/offline-smoke" \
+              --report "$2/candidate/plugin-smoke.json"
+          ' -- "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+      - name: Upload verified candidate and evidence (no deployment)
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpa-plugin-candidate-${{ github.sha }}
+          path: ${{ runner.temp }}/candidate/
+          retention-days: 14
