@@ -1,6 +1,9 @@
 name: Verify plugin candidate
 
 on:
+  push:
+    branches:
+      - 'fix/cpa1-cgo-plugin-validation-20261025'
   pull_request:
     paths:
       - '.github/workflows/verify-plugin-candidate.yml'
