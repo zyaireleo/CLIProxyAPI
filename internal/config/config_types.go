@@ -204,6 +204,14 @@ type AntigravityConnectionPoolConfig struct {
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
 	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
+	// DeviceFingerprintMode converges the Codex installation identity to one stable
+	// account-level device per selected auth. "device" rewrites (or injects, when the
+	// caller omits it) client_metadata.x-codex-installation-id with a UUID derived
+	// solely from the auth ID, so every downstream user sharing that auth presents
+	// the same upstream device while session-scoped identifiers keep their existing
+	// identity-confuse handling. Anything else (empty, "off", or the reserved but
+	// unimplemented "session"/"full") leaves the caller installation identity as-is.
+	DeviceFingerprintMode string `yaml:"device-fingerprint-mode,omitempty" json:"device-fingerprint-mode,omitempty"`
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
 	// StreamBootstrapBuffering holds back the frames that arrive before generation starts, none of
