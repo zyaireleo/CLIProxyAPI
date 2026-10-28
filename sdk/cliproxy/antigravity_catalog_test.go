@@ -2,11 +2,14 @@ package cliproxy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -112,7 +115,7 @@ func TestAntigravityCatalogDiscoveryAndRealRouting(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestAntigravityCatalogFailurePersistenceAndManualModels(t *testing.T) {
+func TestAntigravityCatalogFailureInMemoryAndManualModels(t *testing.T) {
 	var status atomic.Int32
 	status.Store(200)
 	var body atomic.Value
@@ -138,7 +141,11 @@ func TestAntigravityCatalogFailurePersistenceAndManualModels(t *testing.T) {
 		forceCatalogRefresh(s, a)
 		require.Len(t, registry.GetGlobalRegistry().GetModelsForClient(a.ID), 2)
 	}
-	// A new service restores the successful snapshot including unknown-model behavior.
+	// Refresh failures retain the in-memory catalog without writing auth files.
+	entries, err := os.ReadDir(s.cfg.AuthDir)
+	require.NoError(t, err)
+	require.Empty(t, entries)
+	// A new service starts from static/manual models until discovery succeeds.
 	restarted := &Service{cfg: s.cfg, coreManager: s.coreManager}
 	restarted.cfgMu.RLock()
 	restarted.agCatalogMu.Lock()
@@ -146,12 +153,13 @@ func TestAntigravityCatalogFailurePersistenceAndManualModels(t *testing.T) {
 	restored := catalogModels(a, s.cfg, saved)
 	restarted.agCatalogMu.Unlock()
 	restarted.cfgMu.RUnlock()
-	require.Len(t, restored, 2)
-	require.True(t, restored[0].UserDefined)
-	data, err := os.ReadFile(catalogSnapshotPath(s.cfg, a.ID))
-	require.NoError(t, err)
-	require.NotContains(t, string(data), "test-token")
-	require.NotContains(t, string(data), "test-refresh")
+	require.True(t, saved.Success.IsZero())
+	var restoredIDs []string
+	for _, model := range restored {
+		restoredIDs = append(restoredIDs, model.ID)
+	}
+	require.Contains(t, restoredIDs, "manual-model")
+	require.NotContains(t, restoredIDs, "gemini-catalog-new")
 	body.Store(`{"models":{}}`)
 	forceCatalogRefresh(s, a)
 	models := registry.GetGlobalRegistry().GetModelsForClient(a.ID)
@@ -267,7 +275,7 @@ func TestAntigravityCatalogManualAliasesExclusionsAndHotReload(t *testing.T) {
 	require.Equal(t, "replacement", models[0].ID)
 }
 
-func TestAntigravityCatalogCancellationConnectionFailureAndRouteCache(t *testing.T) {
+func TestAntigravityCatalogCancellationConnectionFailureAndRouteState(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		w.WriteHeader(http.StatusOK)
@@ -282,11 +290,36 @@ func TestAntigravityCatalogCancellationConnectionFailureAndRouteCache(t *testing
 	upstream.Close()
 	_, err = fetchAntigravityCatalog(context.Background(), a, s.cfg)
 	require.Error(t, err)
-	state := antigravityCatalogSnapshot{Route: catalogRoute(a, s.cfg), Models: []*ModelInfo{{ID: "old-account-model"}}, Success: time.Now()}
-	require.NoError(t, saveAntigravityCatalog(catalogSnapshotPath(s.cfg, a.ID), state))
+	s.agCatalogMu.Lock()
+	state := s.catalogStateLocked(a, s.cfg)
+	state.Models = []*ModelInfo{{ID: "old-account-model"}}
+	state.Success = time.Now()
+	s.agCatalogMu.Unlock()
 	a.Metadata["project_id"] = "changed-project"
 	s.agCatalogMu.Lock()
 	loaded := s.catalogStateLocked(a, s.cfg)
 	s.agCatalogMu.Unlock()
 	require.True(t, loaded.Success.IsZero())
+}
+
+func TestAntigravityCatalogIgnoresLegacyDiskSnapshots(t *testing.T) {
+	s, a := catalogTestService(t, "http://127.0.0.1:1")
+	directory := filepath.Join(s.cfg.AuthDir, ".antigravity-models")
+	require.NoError(t, os.Mkdir(directory, 0o700))
+	snapshot := antigravityCatalogSnapshot{
+		Route: catalogRoute(a, s.cfg), Models: []*ModelInfo{{ID: "legacy-disk-model"}}, Success: time.Now(),
+	}
+	data, err := json.Marshal(snapshot)
+	require.NoError(t, err)
+	path := filepath.Join(directory, fmt.Sprintf("%x.json", sha256.Sum256([]byte(a.ID))))
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+	s.agCatalogMu.Lock()
+	state := s.catalogStateLocked(a, s.cfg)
+	s.agCatalogMu.Unlock()
+	require.True(t, state.Success.IsZero())
+	require.Empty(t, state.Models)
+	s.forgetAntigravityCatalog(a.ID)
+	unchanged, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, data, unchanged)
 }

@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -50,13 +48,6 @@ func catalogRoute(a *coreauth.Auth, cfg *config.Config) string {
 	return fmt.Sprintf("%x", sha256.Sum256(key))
 }
 
-func catalogSnapshotPath(cfg *config.Config, id string) string {
-	if cfg.AuthDir == "" {
-		return ""
-	}
-	return filepath.Join(cfg.AuthDir, ".antigravity-models", fmt.Sprintf("%x.json", sha256.Sum256([]byte(id))))
-}
-
 // The caller holds cfgMu before agCatalogMu throughout publication.
 func (s *Service) catalogStateLocked(a *coreauth.Auth, cfg *config.Config) *antigravityCatalogState {
 	if s.agCatalogs == nil {
@@ -68,21 +59,7 @@ func (s *Service) catalogStateLocked(a *coreauth.Auth, cfg *config.Config) *anti
 		return state
 	}
 	state = &antigravityCatalogState{antigravityCatalogSnapshot: antigravityCatalogSnapshot{Route: route}, epoch: a.RegistrationEpoch}
-	if data, err := os.ReadFile(catalogSnapshotPath(cfg, a.ID)); err == nil {
-		var saved antigravityCatalogSnapshot
-		if json.Unmarshal(data, &saved) == nil && saved.Route == route && !saved.Success.IsZero() && saved.Models != nil {
-			state.antigravityCatalogSnapshot = saved
-			known := make(map[string]bool)
-			for _, m := range registry.GetAntigravityModels() {
-				known[m.ID] = true
-			}
-			for _, m := range state.Models {
-				if m != nil && !known[m.ID] {
-					m.UserDefined = true
-				}
-			}
-		}
-	}
+	// Model catalogs are process-local metadata and never belong in the auth store.
 	s.agCatalogs[a.ID] = state
 	return state
 }
@@ -244,9 +221,6 @@ func (s *Service) queueAntigravityCatalog(ctx context.Context, a *coreauth.Auth)
 				hash := sha256.Sum256([]byte(a.ID))
 				state.next = time.Now().Add(cfg.AntigravityModels.Interval() * (89 + time.Duration(hash[0]%11)) / 100)
 				if s.publishCatalogLocked(a, active, state) {
-					if errSave := saveAntigravityCatalog(catalogSnapshotPath(cfg, a.ID), state.antigravityCatalogSnapshot); errSave != nil {
-						log.Warn("antigravity model snapshot could not be saved")
-					}
 					added, removed := catalogDelta(previous, models)
 					log.WithFields(log.Fields{"auth_id": a.ID, "models": len(models), "added": added, "removed": removed, "last_success": state.Success}).Info("antigravity model discovery succeeded")
 				}
@@ -381,35 +355,6 @@ func parseAntigravityCatalog(data []byte) ([]*ModelInfo, error) {
 	return models, nil
 }
 
-func saveAntigravityCatalog(path string, snapshot antigravityCatalogSnapshot) error {
-	if path == "" {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	data, err := json.Marshal(snapshot)
-	if err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".catalog-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if err = f.Chmod(0600); err == nil {
-		_, err = f.Write(data)
-	}
-	closeErr := f.Close()
-	if err != nil {
-		return err
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	return os.Rename(f.Name(), path)
-}
-
 func (s *Service) startAntigravityCatalogRefresh(ctx context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
 	s.agCatalogMu.Lock()
@@ -436,16 +381,7 @@ func (s *Service) startAntigravityCatalogRefresh(ctx context.Context) {
 }
 
 func (s *Service) forgetAntigravityCatalog(id string) {
-	s.cfgMu.RLock()
-	defer s.cfgMu.RUnlock()
 	s.agCatalogMu.Lock()
 	defer s.agCatalogMu.Unlock()
 	delete(s.agCatalogs, id)
-	if s.cfg != nil {
-		if path := catalogSnapshotPath(s.cfg, id); path != "" {
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				log.Warn("antigravity model snapshot could not be removed")
-			}
-		}
-	}
 }

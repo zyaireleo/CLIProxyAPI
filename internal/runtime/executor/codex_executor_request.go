@@ -84,11 +84,12 @@ func (e *CodexExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 }
 
 type codexIdentityConfuseState struct {
-	enabled                bool
-	authID                 string
-	originalPromptCacheKey string
-	promptCacheKey         string
-	turnIDs                []codexIdentityReplacement
+	enabled                 bool
+	authID                  string
+	convergedInstallationID string
+	originalPromptCacheKey  string
+	promptCacheKey          string
+	turnIDs                 []codexIdentityReplacement
 }
 
 type codexIdentityReplacement struct {
@@ -156,17 +157,31 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 }
 
 func applyCodexIdentityConfuseBody(cfg *config.Config, auth *cliproxyauth.Auth, userPayload []byte, rawJSON []byte) ([]byte, codexIdentityConfuseState) {
-	if !codexIdentityConfuseEnabled(cfg) || auth == nil || strings.TrimSpace(auth.ID) == "" || len(rawJSON) == 0 {
+	confuse := codexIdentityConfuseEnabled(cfg)
+	converge := codexDeviceConvergenceEnabled(cfg)
+	if (!confuse && !converge) || auth == nil || strings.TrimSpace(auth.ID) == "" || len(rawJSON) == 0 {
 		return rawJSON, codexIdentityConfuseState{}
 	}
 
 	state := codexIdentityConfuseState{enabled: true, authID: strings.TrimSpace(auth.ID)}
-	if promptCacheKey := strings.TrimSpace(gjson.GetBytes(userPayload, "prompt_cache_key").String()); promptCacheKey != "" {
-		state.originalPromptCacheKey = promptCacheKey
-		state.promptCacheKey = codexIdentityConfuseUUID(auth.ID, "prompt-cache", promptCacheKey)
-		rawJSON = helps.SetStringIfDifferent(rawJSON, "prompt_cache_key", state.promptCacheKey)
+	if converge {
+		state.convergedInstallationID = codexConvergedInstallationID(auth.ID)
 	}
-	if installationID := strings.TrimSpace(gjson.GetBytes(userPayload, "client_metadata.x-codex-installation-id").String()); installationID != "" {
+	if confuse {
+		if promptCacheKey := strings.TrimSpace(gjson.GetBytes(userPayload, "prompt_cache_key").String()); promptCacheKey != "" {
+			state.originalPromptCacheKey = promptCacheKey
+			state.promptCacheKey = codexIdentityConfuseUUID(auth.ID, "prompt-cache", promptCacheKey)
+			rawJSON = helps.SetStringIfDifferent(rawJSON, "prompt_cache_key", state.promptCacheKey)
+		}
+	}
+	installationID := strings.TrimSpace(gjson.GetBytes(userPayload, "client_metadata.x-codex-installation-id").String())
+	if state.convergedInstallationID != "" {
+		// Device convergence collapses every caller installation identity (or the
+		// absence of one) onto the single account-level device for this auth.
+		if installationID != state.convergedInstallationID {
+			rawJSON, _ = sjson.SetBytes(rawJSON, "client_metadata.x-codex-installation-id", state.convergedInstallationID)
+		}
+	} else if installationID != "" {
 		rawJSON, _ = sjson.SetBytes(rawJSON, "client_metadata.x-codex-installation-id", codexIdentityConfuseUUID(auth.ID, "installation", installationID))
 	}
 	if turnMetadata := strings.TrimSpace(gjson.GetBytes(rawJSON, "client_metadata.x-codex-turn-metadata").String()); turnMetadata != "" {
@@ -214,6 +229,9 @@ func applyCodexTurnMetadataIdentityConfuse(rawTurnMetadata string, state *codexI
 		updatedTurnMetadata, _ = sjson.Set(updatedTurnMetadata, "prompt_cache_key", state.promptCacheKey)
 	} else if state.promptCacheKey != "" && state.originalPromptCacheKey != "" {
 		updatedTurnMetadata = strings.ReplaceAll(updatedTurnMetadata, state.originalPromptCacheKey, state.promptCacheKey)
+	}
+	if state.convergedInstallationID != "" && gjson.Get(rawTurnMetadata, "installation_id").Exists() {
+		updatedTurnMetadata, _ = sjson.Set(updatedTurnMetadata, "installation_id", state.convergedInstallationID)
 	}
 	if turnID := strings.TrimSpace(gjson.Get(rawTurnMetadata, "turn_id").String()); turnID != "" {
 		updatedTurnMetadata, _ = sjson.Set(updatedTurnMetadata, "turn_id", state.confuseTurnID(turnID))
@@ -270,6 +288,25 @@ func codexIdentityConfuseEnabled(cfg *config.Config) bool {
 	}
 	strategy := strings.ToLower(strings.TrimSpace(cfg.Routing.Strategy))
 	return cfg.Routing.SessionAffinity || strategy == "fill-first" || strategy == "fillfirst" || strategy == "ff"
+}
+
+// codexDeviceConvergenceEnabled reports whether codex.device-fingerprint-mode selects
+// the "device" convergence level. It is independent of identity-confuse and of the
+// routing strategy: the converged installation ID is derived from the selected auth
+// alone, so it never leaks the same device identity across different auths.
+func codexDeviceConvergenceEnabled(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(cfg.Codex.DeviceFingerprintMode), "device")
+}
+
+// codexConvergedInstallationID derives the account-level device identity for an auth.
+// The auth ID is stable across restarts (it is the auth file name), so the same auth
+// keeps the same upstream installation ID as long as the file is not renamed.
+func codexConvergedInstallationID(authID string) string {
+	name := "cli-proxy-api:codex:device-fingerprint:" + strings.TrimSpace(authID)
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(name)).String()
 }
 
 func codexIdentityConfuseUUID(authID string, kind string, value string) string {

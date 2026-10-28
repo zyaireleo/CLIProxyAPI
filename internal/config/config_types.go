@@ -159,11 +159,31 @@ type AntigravityConfig struct {
 	// SensitiveWords is a list of words to obfuscate with zero-width characters in system instructions.
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
 
+	// SafetyMode controls how request.safetySettings reach the antigravity upstream.
+	// "strip" (default) removes them, matching the native Antigravity client payload.
+	// "four_off" keeps caller-supplied settings (filtered to the four categories the
+	// antigravity endpoint accepts on every model) or attaches those four with
+	// threshold OFF when absent, so Google does not apply its own server-side defaults.
+	SafetyMode string `yaml:"safety-mode,omitempty" json:"safety-mode,omitempty"`
+
 	// ConnectionPool configures upstream HTTP connection pooling behavior for Antigravity.
 	ConnectionPool AntigravityConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
 
 	// RateLimit configures per-(auth, model) adaptive AIMD token-bucket pacing.
 	RateLimit AntigravityRateLimitConfig `yaml:"rate-limit,omitempty" json:"rate-limit,omitempty"`
+}
+
+const (
+	// AntigravitySafetyModeStrip drops safetySettings from upstream payloads (default).
+	AntigravitySafetyModeStrip = "strip"
+	// AntigravitySafetyModeFourOff sends the four universally accepted safety
+	// categories with threshold OFF (or the caller's values for those categories).
+	AntigravitySafetyModeFourOff = "four_off"
+)
+
+// SafetyFourOff reports whether the antigravity safety mode selects four_off behavior.
+func (a AntigravityConfig) SafetyFourOff() bool {
+	return strings.ToLower(strings.TrimSpace(a.SafetyMode)) == AntigravitySafetyModeFourOff
 }
 
 // AntigravityConnectionPoolConfig controls upstream HTTP/1.1 connection pooling behavior for Antigravity.
@@ -184,6 +204,14 @@ type AntigravityConnectionPoolConfig struct {
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
 	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
+	// DeviceFingerprintMode converges the Codex installation identity to one stable
+	// account-level device per selected auth. "device" rewrites (or injects, when the
+	// caller omits it) client_metadata.x-codex-installation-id with a UUID derived
+	// solely from the auth ID, so every downstream user sharing that auth presents
+	// the same upstream device while session-scoped identifiers keep their existing
+	// identity-confuse handling. Anything else (empty, "off", or the reserved but
+	// unimplemented "session"/"full") leaves the caller installation identity as-is.
+	DeviceFingerprintMode string `yaml:"device-fingerprint-mode,omitempty" json:"device-fingerprint-mode,omitempty"`
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
 	// StreamBootstrapBuffering holds back the frames that arrive before generation starts, none of

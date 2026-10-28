@@ -44,11 +44,12 @@ HTTP errors, broken JSON and missing/null `models` retain the successful catalog
 A successful empty object removes automatic entries while keeping manual ones.
 Before the first successful discovery, the static catalog is a temporary fallback.
 
-Successful snapshots are saved atomically under `<auth-dir>/.antigravity-models/`.
-They contain metadata and a hashed route identity, not tokens, and are isolated
-by account, credential, project and route. Restart restores a matching snapshot
-and refreshes asynchronously. Account deletion removes its snapshot. Refreshes
-preserve cooldown/suspension state and reject stale account/config updates.
+Successful catalogs remain in memory and are isolated by account, credential,
+project and route. No model catalog files are read or written. Restart begins
+with the static catalog and refreshes asynchronously; manual entries remain
+available. The auth store excludes legacy `.antigravity-models` directories so
+model snapshots cannot become credentials. Refreshes preserve cooldown/suspension
+state and reject stale account/config updates.
 Discovery success does **not** prove inference success.
 
 ## Troubleshooting and rollback
@@ -69,6 +70,7 @@ Discovery success does **not** prove inference success.
 
 Tests use a local HTTP server and the real Antigravity executor, covering public
 model listing, normal/streaming routing, isolation, manual entries, aliases,
-exclusions, config validation, stale publication, failures and restart recovery.
+exclusions, config validation, stale publication, failures, memory-only catalogs
+and exclusion of legacy snapshots from auth enumeration.
 They require no paid generation. Deployment and live inference acceptance are
 separate steps.

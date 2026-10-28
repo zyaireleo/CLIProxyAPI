@@ -392,3 +392,105 @@ func TestCodexExecutorCacheHelper_ClaudeAgentScopeUsesResolvedModelAcrossHTTPAnd
 		t.Fatalf("HTTP/WebSocket prompt keys differ: http=%q websocket=%q", childKey, websocketKey)
 	}
 }
+
+func deviceConvergenceConfig(mode string) *config.Config {
+	return &config.Config{
+		Codex: config.CodexConfig{DeviceFingerprintMode: mode},
+	}
+}
+
+func TestCodexDeviceConvergence_CollapsesInstallationsPerAuth(t *testing.T) {
+	cfg := deviceConvergenceConfig("device")
+	auth := &cliproxyauth.Auth{ID: "codex-a.json", Provider: "codex"}
+	expected := codexConvergedInstallationID(auth.ID)
+
+	for _, installation := range []string{"install-user-1", "install-user-2"} {
+		payload := []byte(`{"model":"gpt-5.3-codex","prompt_cache_key":"cache-1","client_metadata":{"x-codex-installation-id":"` + installation + `"}}`)
+		body, state := applyCodexIdentityConfuseBody(cfg, auth, payload, payload)
+		if got := gjson.GetBytes(body, "client_metadata.x-codex-installation-id").String(); got != expected {
+			t.Fatalf("installation id for %q = %q, want converged %q", installation, got, expected)
+		}
+		if state.convergedInstallationID != expected {
+			t.Fatalf("state converged installation = %q, want %q", state.convergedInstallationID, expected)
+		}
+		// identity-confuse is off: session-scoped identifiers must stay untouched.
+		if got := gjson.GetBytes(body, "prompt_cache_key").String(); got != "cache-1" {
+			t.Fatalf("prompt_cache_key rewritten without identity-confuse: %q", got)
+		}
+	}
+}
+
+func TestCodexDeviceConvergence_InjectsMissingInstallationID(t *testing.T) {
+	cfg := deviceConvergenceConfig("device")
+	auth := &cliproxyauth.Auth{ID: "codex-a.json", Provider: "codex"}
+	payload := []byte(`{"model":"gpt-5.3-codex"}`)
+
+	body, _ := applyCodexIdentityConfuseBody(cfg, auth, payload, payload)
+	if got := gjson.GetBytes(body, "client_metadata.x-codex-installation-id").String(); got != codexConvergedInstallationID(auth.ID) {
+		t.Fatalf("missing installation id not injected: %q", got)
+	}
+}
+
+func TestCodexDeviceConvergence_DistinguishesAuths(t *testing.T) {
+	cfg := deviceConvergenceConfig("device")
+	payload := []byte(`{"model":"gpt-5.3-codex","client_metadata":{"x-codex-installation-id":"install-user-1"}}`)
+
+	first, _ := applyCodexIdentityConfuseBody(cfg, &cliproxyauth.Auth{ID: "codex-a.json", Provider: "codex"}, payload, payload)
+	second, _ := applyCodexIdentityConfuseBody(cfg, &cliproxyauth.Auth{ID: "codex-b.json", Provider: "codex"}, payload, payload)
+	firstID := gjson.GetBytes(first, "client_metadata.x-codex-installation-id").String()
+	secondID := gjson.GetBytes(second, "client_metadata.x-codex-installation-id").String()
+	if firstID == secondID {
+		t.Fatalf("different auths converged to the same installation id %q", firstID)
+	}
+}
+
+func TestCodexDeviceConvergence_TurnMetadataInstallationRewritten(t *testing.T) {
+	cfg := deviceConvergenceConfig("device")
+	auth := &cliproxyauth.Auth{ID: "codex-a.json", Provider: "codex"}
+	payload := []byte(`{"model":"gpt-5.3-codex","client_metadata":{"x-codex-installation-id":"install-user-1","x-codex-turn-metadata":"{\"installation_id\":\"install-user-1\",\"turn_id\":\"turn-1\",\"sandbox\":\"seccomp\"}"}}`)
+
+	body, _ := applyCodexIdentityConfuseBody(cfg, auth, payload, payload)
+	raw := gjson.GetBytes(body, "client_metadata.x-codex-turn-metadata").String()
+	if got := gjson.Get(raw, "installation_id").String(); got != codexConvergedInstallationID(auth.ID) {
+		t.Fatalf("turn metadata installation_id = %q, want converged", got)
+	}
+	if got := gjson.Get(raw, "sandbox").String(); got != "seccomp" {
+		t.Fatalf("turn metadata unrelated field rewritten: sandbox=%q", got)
+	}
+}
+
+func TestCodexDeviceConvergence_OffByDefault(t *testing.T) {
+	auth := &cliproxyauth.Auth{ID: "codex-a.json", Provider: "codex"}
+	payload := []byte(`{"model":"gpt-5.3-codex","client_metadata":{"x-codex-installation-id":"install-user-1"}}`)
+
+	for _, mode := range []string{"", "off", "session", "full", "bogus"} {
+		body, state := applyCodexIdentityConfuseBody(deviceConvergenceConfig(mode), auth, payload, payload)
+		if got := gjson.GetBytes(body, "client_metadata.x-codex-installation-id").String(); got != "install-user-1" {
+			t.Fatalf("mode %q rewrote installation id to %q", mode, got)
+		}
+		if state.enabled {
+			t.Fatalf("mode %q enabled identity state", mode)
+		}
+	}
+}
+
+func TestCodexDeviceConvergence_CombinesWithIdentityConfuse(t *testing.T) {
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{Strategy: "fill-first"},
+		Codex:   config.CodexConfig{IdentityConfuse: true, DeviceFingerprintMode: "device"},
+	}
+	auth := &cliproxyauth.Auth{ID: "codex-a.json", Provider: "codex"}
+	payload := []byte(`{"model":"gpt-5.3-codex","prompt_cache_key":"cache-1","client_metadata":{"x-codex-installation-id":"install-user-1"}}`)
+
+	body, state := applyCodexIdentityConfuseBody(cfg, auth, payload, payload)
+	if got := gjson.GetBytes(body, "client_metadata.x-codex-installation-id").String(); got != codexConvergedInstallationID(auth.ID) {
+		t.Fatalf("installation id = %q, want converged", got)
+	}
+	wantCacheKey := codexIdentityConfuseUUID(auth.ID, "prompt-cache", "cache-1")
+	if got := gjson.GetBytes(body, "prompt_cache_key").String(); got != wantCacheKey {
+		t.Fatalf("prompt_cache_key = %q, want identity-confuse derivation %q", got, wantCacheKey)
+	}
+	if state.convergedInstallationID == "" || state.promptCacheKey != wantCacheKey {
+		t.Fatalf("state missing converged installation or confused cache key: %+v", state)
+	}
+}
