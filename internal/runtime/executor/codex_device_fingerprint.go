@@ -319,8 +319,7 @@ func codexValidV4(s string) (string, bool) {
 // codexStableUUIDv4 derives a deterministic UUIDv4 from sha256(name).
 func codexStableUUIDv4(name string) string {
 	sum := sha256.Sum256([]byte(name))
-	var b [16]byte
-	copy(b[:], sum[:16])
+	b := [16]byte(sum[:16])
 	b[6] = b[6]&0x0f | 0x40
 	b[8] = b[8]&0x3f | 0x80
 	return uuid.UUID(b).String()
