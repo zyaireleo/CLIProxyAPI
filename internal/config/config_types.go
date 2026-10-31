@@ -257,6 +257,17 @@ type CodexConfig struct {
 	UpstreamRequestCompressionMinBytes int `yaml:"upstream-request-compression-min-bytes,omitempty" json:"upstream-request-compression-min-bytes,omitempty"`
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
+	// DeviceFingerprintMode converges the Codex installation identity per OAuth auth.
+	// "device" rewrites client_metadata.x-codex-installation-id and the installation_id
+	// inside x-codex-turn-metadata (body and header) to one stable UUIDv4 derived from
+	// the auth's account identity, and drops X-Codex-Installation-Id headers. Session,
+	// thread, window, turn and prompt cache identifiers are untouched. Empty, "off" or
+	// any other value leaves requests unchanged. API-key credentials are never rewritten.
+	DeviceFingerprintMode string `yaml:"device-fingerprint-mode,omitempty" json:"device-fingerprint-mode,omitempty"`
+	// DeviceFingerprintInjectMissing injects the converged installation id when a
+	// non-SIWC request carries no client_metadata.x-codex-installation-id.
+	// nil or false means no injection (default).
+	DeviceFingerprintInjectMissing *bool `yaml:"device-fingerprint-inject-missing,omitempty" json:"device-fingerprint-inject-missing,omitempty"`
 	// StreamBootstrapBuffering holds back the frames that arrive before generation starts, none of
 	// which the client has seen anything from - the handshake (response.created, response.in_progress,
 	// the websocket metadata frames), keepalive heartbeats, and the *.added announcements of an item

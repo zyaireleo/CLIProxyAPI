@@ -226,6 +226,7 @@ func (e *CodexWebsocketsExecutor) InterruptExecutionSession(ctx context.Context,
 		sess.connMu.Unlock()
 		return cliproxyexecutor.ErrNoActiveUpstreamWebsocket
 	}
+	deviceKey := sess.deviceKey
 	sess.activeMu.Lock()
 	targetID := gjson.GetBytes(payload, "response_id").String()
 	_, alreadyTerminal := sess.terminalResponseIDs[targetID]
@@ -266,6 +267,11 @@ func (e *CodexWebsocketsExecutor) InterruptExecutionSession(ctx context.Context,
 	}
 	if !authEnabled {
 		return fmt.Errorf("websocket credential is no longer enabled")
+	}
+	// Only the installation identity is converged to the handshake's device;
+	// response_id, mode and extension fields stay byte-for-byte intact.
+	if deviceKey != "" {
+		payload = applyCodexDeviceFingerprintBody(payload, deviceKey, false)
 	}
 	if errWrite := writeCodexWebsocketMessage(sess, conn, payload); errWrite != nil {
 		return errWrite

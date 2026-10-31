@@ -1128,6 +1128,21 @@ oauth:
       # Identifier (agent_name_hint and User-Agent prefix) for Sign in with ChatGPT (SIWC) OAuth and API requests.
       signin-with-chatgpt-identifier: "CLIProxyAPI"
 
+      # Converge the Codex installation identity per OAuth credential ("off" or "device").
+      # "device" presents one stable UUIDv4 per credential upstream: it rewrites
+      # client_metadata.x-codex-installation-id and the installation_id inside
+      # x-codex-turn-metadata (body and header), and removes X-Codex-Installation-Id headers.
+      # The id comes from an explicit "codex_installation_id" in the auth file (UUIDv4),
+      # otherwise from the account identity (account_id / id_token; team-like plans also
+      # mix in the ChatGPT user id), and only as a last resort from the auth file name.
+      # Session, thread, window, turn and prompt cache identifiers are left untouched.
+      # A credential may override the mode with "codex_device_fingerprint" in its auth file.
+      # Hot reload: HTTP applies immediately, websockets redial on their next request, and
+      # running duplex streams keep their starting mode. Restart to apply everywhere at once.
+      # device-fingerprint-mode: off
+      # Inject the converged id when a request carries no x-codex-installation-id (default false).
+      # device-fingerprint-inject-missing: false
+
       # Default headers for Codex OAuth model requests.
       # These are used only for file-backed/OAuth Codex requests when the client
       # does not send the header. `user-agent` applies to HTTP and websocket requests;
