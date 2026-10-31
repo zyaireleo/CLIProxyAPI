@@ -65,6 +65,7 @@ type codexWebsocketSession struct {
 	authID                    string
 	proxyURL                  string
 	useSIWC                   bool
+	deviceKey                 string // Codex installation id sent on this connection's handshake; "" when device fingerprint mode was off
 	connCfg                   *config.Config
 	hasConnCfg                bool
 	multiAgentV2OptimizedConn *websocket.Conn
@@ -421,6 +422,7 @@ func (s *codexWebsocketSession) detachConnection(conn *websocket.Conn, lifecycle
 		s.connCloser = nil
 		s.connCfg = nil
 		s.hasConnCfg = false
+		s.deviceKey = ""
 		s.multiAgentV2OptimizedConn = nil
 		if s.readerConn == conn {
 			s.readerConn = nil
@@ -526,7 +528,39 @@ func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID st
 	if conn == nil || websocketSessionTargetMatches(sess, authID, wsURL, proxyURL, useSIWC...) {
 		return nil, nil, "", "", nil
 	}
+	return detachWebsocketSessionConnLocked(sess)
+}
 
+// detachDeviceChangedWebsocketSessionConn detaches the session connection when
+// its handshake carried a different Codex device fingerprint than the request.
+func detachDeviceChangedWebsocketSessionConn(sess *codexWebsocketSession, deviceKey string) (*websocket.Conn, *websocketConnectionCloser, string, string, cliproxyexecutor.ExecutionLifecycle) {
+	if sess == nil {
+		return nil, nil, "", "", nil
+	}
+
+	sess.connMu.Lock()
+	defer sess.connMu.Unlock()
+	if sess.conn == nil || sess.deviceKey == deviceKey {
+		return nil, nil, "", "", nil
+	}
+	return detachWebsocketSessionConnLocked(sess)
+}
+
+// websocketSessionDeviceKeyMatches reports whether conn is still the session
+// connection and was dialed with the given Codex device fingerprint.
+func websocketSessionDeviceKeyMatches(sess *codexWebsocketSession, conn *websocket.Conn, deviceKey string) bool {
+	if sess == nil || conn == nil {
+		return deviceKey == ""
+	}
+	sess.connMu.Lock()
+	defer sess.connMu.Unlock()
+	return sess.conn == conn && sess.deviceKey == deviceKey
+}
+
+// detachWebsocketSessionConnLocked clears the session connection state. The
+// caller must hold sess.connMu and sess.conn must be non-nil.
+func detachWebsocketSessionConnLocked(sess *codexWebsocketSession) (*websocket.Conn, *websocketConnectionCloser, string, string, cliproxyexecutor.ExecutionLifecycle) {
+	conn := sess.conn
 	previousAuthID := sess.authID
 	previousWSURL := sess.wsURL
 	lifecycle := sess.lifecycle
@@ -538,6 +572,7 @@ func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID st
 	sess.connCfg = nil
 	sess.hasConnCfg = false
 	sess.useSIWC = false
+	sess.deviceKey = ""
 	sess.multiAgentV2OptimizedConn = nil
 	if sess.readerConn == conn {
 		sess.readerConn = nil
@@ -730,6 +765,21 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConnWithSIWC(ctx context.Context
 			staleLifecycle.End("target_changed")
 		}
 	}
+	deviceKey := codexDeviceKey(e.cfg, auth, useSIWC)
+	if staleConn, staleCloser, staleAuthID, staleWSURL, staleLifecycle := detachDeviceChangedWebsocketSessionConn(sess, deviceKey); staleConn != nil {
+		// The handshake headers are fixed at dial time; a changed device
+		// fingerprint needs a fresh connection.
+		staleLastEvent := sess.getLastEventType(staleConn)
+		logCodexWebsocketDisconnectedWithLastEvent(sess, sess.sessionID, staleAuthID, staleWSURL, "device_fingerprint_changed", staleLastEvent, nil)
+		if staleCloser != nil {
+			if errClose := staleCloser.Close(); errClose != nil {
+				log.Errorf("codex websockets executor: close stale websocket error: %v", errClose)
+			}
+		}
+		if staleLifecycle != nil {
+			staleLifecycle.End("device_fingerprint_changed")
+		}
+	}
 
 	sess.connMu.Lock()
 	conn := sess.conn
@@ -758,7 +808,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConnWithSIWC(ctx context.Context
 	}
 
 	sess.connMu.Lock()
-	if sess.conn != nil && websocketSessionTargetMatches(sess, authID, wsURL, dialProxyURL, useSIWC) {
+	if sess.conn != nil && sess.deviceKey == deviceKey && websocketSessionTargetMatches(sess, authID, wsURL, dialProxyURL, useSIWC) {
 		previous := sess.conn
 		previousCloser := sess.connCloser
 		sess.connMu.Unlock()
@@ -772,6 +822,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConnWithSIWC(ctx context.Context
 	sess.connCloser = closer
 	sess.connCfg = e.cfg
 	sess.hasConnCfg = true
+	sess.deviceKey = deviceKey
 	sess.multiAgentV2OptimizedConn = nil
 	sess.wsURL = wsURL
 	sess.authID = authID
@@ -946,6 +997,7 @@ func (e *CodexWebsocketsExecutor) invalidateUpstreamConnWithNotify(sess *codexWe
 	sess.connCloser = nil
 	sess.connCfg = nil
 	sess.hasConnCfg = false
+	sess.deviceKey = ""
 	sess.multiAgentV2OptimizedConn = nil
 	if sess.readerConn == conn {
 		sess.readerConn = nil
@@ -1081,6 +1133,7 @@ func closeCodexWebsocketSession(sess *codexWebsocketSession, reason string) {
 	sess.connCloser = nil
 	sess.connCfg = nil
 	sess.hasConnCfg = false
+	sess.deviceKey = ""
 	sess.multiAgentV2OptimizedConn = nil
 	if sess.readerConn == conn {
 		sess.readerConn = nil
