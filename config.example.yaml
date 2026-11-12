@@ -243,6 +243,10 @@ quota-exceeded:
   switch-preview-model: true # Whether to automatically switch to a preview model when a quota is exceeded
   antigravity-credits: true # Whether to use credits as last-resort fallback when all free-tier auths are exhausted for Claude models
 
+# Enable only with the matching gateway and neutral-aware priority plugin.
+# Scoped requests require X-Sub2API-429-Guard: v1 on a private gateway listener.
+antigravity-429-guard: false
+
 # Routing strategy for selecting credentials when multiple match.
 routing:
   strategy: "round-robin" # round-robin (default), weighted-round-robin, fill-first

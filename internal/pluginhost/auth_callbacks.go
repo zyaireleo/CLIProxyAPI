@@ -407,21 +407,25 @@ func (h *Host) buildHostAuthFileEntry(auth *coreauth.Auth) *pluginapi.HostAuthFi
 		name = auth.ID
 	}
 	entry := &pluginapi.HostAuthFileEntry{
-		ID:             auth.ID,
-		AuthIndex:      auth.Index,
-		Name:           name,
-		Type:           strings.TrimSpace(auth.Provider),
-		Provider:       strings.TrimSpace(auth.Provider),
-		Label:          auth.Label,
-		Status:         string(auth.Status),
-		StatusMessage:  auth.StatusMessage,
-		Disabled:       auth.Disabled,
-		Unavailable:    auth.Unavailable,
-		RuntimeOnly:    runtimeOnly,
-		Source:         "memory",
-		Success:        auth.Success,
-		Failed:         auth.Failed,
-		RecentRequests: hostRecentRequests(auth),
+		HealthSuccess:        auth.HealthSuccess,
+		HealthFailed:         auth.HealthFailed,
+		NeutralResults:       auth.NeutralResults,
+		RecentHealthRequests: hostRecentHealthRequests(auth),
+		ID:                   auth.ID,
+		AuthIndex:            auth.Index,
+		Name:                 name,
+		Type:                 strings.TrimSpace(auth.Provider),
+		Provider:             strings.TrimSpace(auth.Provider),
+		Label:                auth.Label,
+		Status:               string(auth.Status),
+		StatusMessage:        auth.StatusMessage,
+		Disabled:             auth.Disabled,
+		Unavailable:          auth.Unavailable,
+		RuntimeOnly:          runtimeOnly,
+		Source:               "memory",
+		Success:              auth.Success,
+		Failed:               auth.Failed,
+		RecentRequests:       hostRecentRequests(auth),
 	}
 	if email := authEmail(auth); email != "" {
 		entry.Email = email
@@ -657,6 +661,18 @@ func hostRecentRequests(auth *coreauth.Auth) []pluginapi.HostRecentRequestEntry 
 			Success: entry.Success,
 			Failed:  entry.Failed,
 		})
+	}
+	return out
+}
+
+func hostRecentHealthRequests(auth *coreauth.Auth) []pluginapi.HostRecentRequestEntry {
+	if auth == nil {
+		return nil
+	}
+	snapshot := auth.RecentHealthRequestsSnapshot(time.Now())
+	out := make([]pluginapi.HostRecentRequestEntry, 0, len(snapshot))
+	for _, entry := range snapshot {
+		out = append(out, pluginapi.HostRecentRequestEntry{Time: entry.Time, Success: entry.Success, Failed: entry.Failed})
 	}
 	return out
 }

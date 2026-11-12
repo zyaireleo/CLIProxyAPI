@@ -20,7 +20,12 @@ const AutoServiceTier = "auto"
 
 // Record contains the usage statistics captured for a single provider request.
 type Record struct {
-	Provider string
+	GatewayTraceID string `json:"GatewayTraceID,omitempty"`
+	FailureClass   string `json:"FailureClass,omitempty"`
+	HealthEffect   string `json:"HealthEffect,omitempty"`
+	AttemptsUsed   int    `json:"AttemptsUsed,omitempty"`
+	RetryExhausted bool   `json:"RetryExhausted,omitempty"`
+	Provider       string
 	// BaseURL stores the configured upstream base URL when available.
 	BaseURL string
 	// ExecutorType stores the concrete executor type that handled the request.
@@ -65,6 +70,7 @@ type Record struct {
 
 // Failure holds HTTP failure metadata for an upstream request attempt.
 type Failure struct {
+	Code       string
 	StatusCode int
 	Body       string
 }

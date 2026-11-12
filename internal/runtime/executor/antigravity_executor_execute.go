@@ -25,6 +25,11 @@ import (
 
 // Execute performs a non-streaming request to the Antigravity API.
 func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	defer func() {
+		if cliproxyexecutor.IsAntigravityGuardModel(thinking.ParseSuffix(req.Model).ModelName) {
+			err = cliproxyexecutor.WrapAntigravityGuardFailure(ctx, err, "")
+		}
+	}()
 	if helps.HasResponsesCompactionItem(req.Payload) {
 		expanded, errExpand := helps.ExpandAntigravityCompactionCapsules(req.Payload)
 		if errExpand != nil {
@@ -185,7 +190,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 			return resp, errBudget
 		}
 	}
-	httpResp, errDo := helps.DoGeminiGeneration(ctx, httpClient, httpReq, baseModel)
+	httpResp, errDo := helps.DoGeminiGeneration(ctx, helps.WithAntigravityAttemptBudget(ctx, httpClient, baseModel), httpReq, baseModel)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
@@ -210,7 +215,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, bodyBytes)
 
-	if httpResp.StatusCode == http.StatusTooManyRequests {
+	if httpResp.StatusCode == http.StatusTooManyRequests && !(cliproxyexecutor.AntigravityGuardFromContext(ctx) != nil && cliproxyexecutor.IsAntigravityGuardModel(baseModel)) {
 		decision := decideAntigravity429(bodyBytes)
 		antigravityRecordUpstream429(ctx, e.cfg, auth, baseModel, decision)
 		switch decision.kind {
@@ -238,10 +243,11 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 			// Report the upstream failure rather than the cleanup failure.
 			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
 		}
-		err = antigravityImageStatusError(baseModel, httpResp.StatusCode, bodyBytes, httpResp.Header)
+		err = helps.GuardAntigravityFailure(ctx, baseModel, antigravityImageStatusError(baseModel, httpResp.StatusCode, bodyBytes, httpResp.Header), httpResp.StatusCode, bodyBytes, httpResp.Header)
 		return resp, err
 	}
 
+	helps.ObserveAntigravityPolicy(ctx, baseModel, bodyBytes)
 	if errImage := validateFlashImageOutput(ctx, auth, baseModel, originalPayload, helps.InspectImageResponse(bodyBytes)); errImage != nil {
 		return resp, errImage
 	}
@@ -349,6 +355,11 @@ func (e *AntigravityExecutor) executeCompaction(ctx context.Context, auth *clipr
 
 // executeClaudeNonStream performs a claude non-streaming request to the Antigravity API.
 func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	defer func() {
+		if cliproxyexecutor.IsAntigravityGuardModel(thinking.ParseSuffix(req.Model).ModelName) {
+			err = cliproxyexecutor.WrapAntigravityGuardFailure(ctx, err, "")
+		}
+	}()
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	if strings.HasPrefix(baseModel, "gemini") {
 		proxy, isolate := "", false
@@ -476,7 +487,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 			return resp, errBudget
 		}
 	}
-	httpResp, errDo := helps.DoGeminiGeneration(ctx, httpClient, httpReq, baseModel)
+	httpResp, errDo := helps.DoGeminiGeneration(ctx, helps.WithAntigravityAttemptBudget(ctx, httpClient, baseModel), httpReq, baseModel)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
@@ -508,7 +519,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 			return resp, err
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, bodyBytes)
-		if httpResp.StatusCode == http.StatusTooManyRequests {
+		if httpResp.StatusCode == http.StatusTooManyRequests && !(cliproxyexecutor.AntigravityGuardFromContext(ctx) != nil && cliproxyexecutor.IsAntigravityGuardModel(baseModel)) {
 			decision := decideAntigravity429(bodyBytes)
 			antigravityRecordUpstream429(ctx, e.cfg, auth, baseModel, decision)
 
@@ -535,7 +546,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 			// Report the upstream failure rather than the cleanup failure.
 			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
 		}
-		err = antigravityImageStatusError(baseModel, httpResp.StatusCode, bodyBytes, httpResp.Header)
+		err = helps.GuardAntigravityFailure(ctx, baseModel, antigravityImageStatusError(baseModel, httpResp.StatusCode, bodyBytes, httpResp.Header), httpResp.StatusCode, bodyBytes, httpResp.Header)
 		return resp, err
 	}
 
@@ -571,6 +582,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 			if payload == nil {
 				continue
 			}
+			helps.ObserveAntigravityPolicy(ctx, baseModel, payload)
 			reporter.ObserveResponseModel(payload)
 
 			if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok && !cliproxyexecutor.FlashImageModel(baseModel) {
@@ -631,7 +643,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	if strings.HasPrefix(baseModel, "gemini") {
 		requireImage := e.cfg != nil && e.cfg.AntigravityGeminiMaxAttempts > 0 && antigravityImageModelName(baseModel) && !antigravityImageOutputDisabled(originalPayload)
 		if failure := semanticSummary.Failure(requireImage, responseFormat == sdktranslator.FormatGemini); failure != nil {
-			return resp, failure
+			return resp, helps.GuardAntigravityFailure(ctx, baseModel, failure, semanticSummary.ErrorStatus, semanticSummary.ErrorBody, httpResp.Header)
 		}
 	}
 

@@ -771,6 +771,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	result = annotateAntigravityGuardResult(ctx, result)
 	if m != nil {
 		if policy := m.ResultPolicy(); policy != nil {
 			result = policy.ApplyResultPolicy(ctx, result)
@@ -779,6 +780,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 	}
+	result = annotateAntigravityGuardResult(ctx, result)
 	modelKey := canonicalModelKey(result.Model)
 
 	var authSnapshot *Auth
@@ -809,8 +811,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		} else {
 			auth.Failed++
 		}
+		auth.observeGuardHealth(result, modelKey, now)
 
-		if result.Success {
+		if result.HealthEffect == cliproxyexecutor.GuardHealthNeutral {
+			// Admission pauses and raw observations never replace credential health.
+		} else if result.Success {
 			if auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
 				// Retain active credential-scoped cooldown
 			} else if modelKey != "" {
@@ -992,7 +997,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		auth.Generation++
 		auth.UpdatedAt = now
 
-		if !result.SkipQuotaObservation {
+		if !result.SkipQuotaObservation && result.HealthEffect != cliproxyexecutor.GuardHealthNeutral {
 			auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
 			if modelState != nil {
 				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
@@ -1040,7 +1045,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 }
 
 func (m *Manager) updateSessionAffinity(result Result) {
-	if m == nil {
+	if m == nil || result.HealthEffect == cliproxyexecutor.GuardHealthNeutral {
 		return
 	}
 	sel := m.Selector()
@@ -1488,8 +1493,20 @@ func resultErrorFromError(err error) *Error {
 	if resultErr.HTTPStatus == 0 {
 		resultErr.HTTPStatus = statusCodeFromError(err)
 	}
+	var guard *cliproxyexecutor.AntigravityGuardError
+	if errors.As(err, &guard) && guard.Class != "" {
+		resultErr.Code = guard.Class
+	}
+	if guard != nil && (resultErr.HTTPStatus == http.StatusUnauthorized || resultErr.HTTPStatus == http.StatusForbidden) {
+		resultErr.Code = antigravityGuardAuthenticationFailureCode
+	}
 	var regional *geminiresponse.Error
 	switch {
+	case resultErr.Code == antigravityGuardAuthenticationFailureCode:
+		// Authentication failures always retain credential protection, even when
+		// an outer wrapper carries a contradictory neutral classification.
+	case isGuardNeutralClass(resultErr.Code):
+		// Preserve the trusted transport classification through generic error rules.
 	case errors.As(err, &regional) && regional.RouteFault:
 		resultErr.Code = "gemini_regional_route"
 	case isExplicitModelNotFoundError(err, ""):
@@ -1518,13 +1535,16 @@ func resultErrorFromError(err error) *Error {
 // Connection lifecycle is intentionally separate from request_scoped so transport
 // drops do not also stop credential rotation via isRequestInvalidError.
 func shouldSkipCredentialCooldown(err *Error) bool {
+	if err != nil && err.Code == antigravityGuardAuthenticationFailureCode {
+		return false
+	}
 	if err != nil && err.Code == "gemini_regional_route" {
 		return true
 	}
 	if err != nil && err.Code == ErrorCodeForceCooldown {
 		return false
 	}
-	return isRequestScopedResultError(err) || isConnectionLifecycleResultError(err) || isTransientTransportResultError(err)
+	return (err != nil && isGuardNeutralClass(err.Code)) || isRequestScopedResultError(err) || isConnectionLifecycleResultError(err) || isTransientTransportResultError(err)
 }
 
 // isConnectionLifecycleError reports transport/session lifecycle failures that must
