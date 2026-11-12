@@ -243,6 +243,9 @@ func applyRequestScopedActionToResult(action string, okAction bool, result *Resu
 	if !okAction || result == nil || result.Error == nil {
 		return
 	}
+	if result.Error.Code == antigravityGuardAuthenticationFailureCode || isGuardNeutralClass(result.Error.Code) {
+		return
+	}
 	if action == RequestScopedActionStop || action == RequestScopedActionContinue {
 		result.Error.Code = ErrorCodeRequestScoped
 	} else if action == RequestScopedActionStopAndCooldown || action == RequestScopedActionContinueAndCooldown {

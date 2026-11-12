@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 const (
@@ -281,6 +282,22 @@ func verifyAccountedHomeConcurrencyIdentity(tuple homeConcurrencyTuple, auth *Au
 // SafeResponseHeaders returns trusted response headers only for concrete
 // retry/cooldown errors.
 func SafeResponseHeaders(err error) http.Header {
+	h := safeResponseRetryHeaders(err)
+	var guard *cliproxyexecutor.AntigravityGuardError
+	if errors.As(err, &guard) && guard != nil {
+		if h == nil {
+			h = make(http.Header)
+		} else {
+			h = h.Clone()
+		}
+		for key, values := range guard.SafeResponseHeaders() {
+			h[key] = append([]string(nil), values...)
+		}
+	}
+	return h
+}
+
+func safeResponseRetryHeaders(err error) http.Header {
 	var busy *HomeConcurrencyBusyError
 	if errors.As(err, &busy) && busy != nil {
 		return busy.SafeResponseHeaders()

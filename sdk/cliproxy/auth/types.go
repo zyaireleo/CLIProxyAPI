@@ -98,8 +98,13 @@ type Auth struct {
 	// Runtime carries non-serialisable data used during execution (in-memory only).
 	Runtime any `json:"-"`
 
-	Success int64 `json:"-"`
-	Failed  int64 `json:"-"`
+	HealthSuccess        int64                       `json:"-"`
+	HealthFailed         int64                       `json:"-"`
+	NeutralResults       int64                       `json:"-"`
+	AdmissionBackoffs    map[string]AdmissionBackoff `json:"-"`
+	recentHealthRequests recentRequestRing           `json:"-"`
+	Success              int64                       `json:"-"`
+	Failed               int64                       `json:"-"`
 
 	recentRequests recentRequestRing `json:"-"`
 	indexAssigned  bool              `json:"-"`
@@ -307,6 +312,12 @@ func (a *Auth) Clone() *Auth {
 		copyAuth.ModelStates = make(map[string]*ModelState, len(a.ModelStates))
 		for key, state := range a.ModelStates {
 			copyAuth.ModelStates[key] = state.Clone()
+		}
+	}
+	if a.AdmissionBackoffs != nil {
+		copyAuth.AdmissionBackoffs = make(map[string]AdmissionBackoff, len(a.AdmissionBackoffs))
+		for k, v := range a.AdmissionBackoffs {
+			copyAuth.AdmissionBackoffs[k] = v
 		}
 	}
 	copyAuth.Runtime = a.Runtime

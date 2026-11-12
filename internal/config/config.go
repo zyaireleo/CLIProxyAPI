@@ -6,8 +6,10 @@ package config
 
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
-	AntigravityModels AntigravityModelsConfig `yaml:"antigravity-models,omitempty" json:"antigravity-models,omitempty"`
-	SDKConfig         `yaml:",inline"`
+	// Antigravity429Guard requires the trusted gateway contract and compatible priority plugin.
+	Antigravity429Guard bool                    `yaml:"antigravity-429-guard" json:"antigravity-429-guard"`
+	AntigravityModels   AntigravityModelsConfig `yaml:"antigravity-models,omitempty" json:"antigravity-models,omitempty"`
+	SDKConfig           `yaml:",inline"`
 	// Host is the network host/interface on which the API server will bind.
 	// Default is empty ("") to bind all interfaces (IPv4 + IPv6). Use "127.0.0.1" or "localhost" for local-only access.
 	Host string `yaml:"host" json:"-"`

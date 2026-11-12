@@ -311,6 +311,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			applyRequestScopedActionToResult(action, okAction, &result)
 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+			if isRequestStopError(errStream) {
+				return nil, errStream
+			}
 			if okAction {
 				if isRequestScopedStop(action, okAction) {
 					return nil, wrapRequestStopError(errStream)
@@ -399,7 +402,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				applyRequestScopedActionToResult(action, okAction, &result)
 				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
 				discardStreamChunks(streamResult.Chunks)
-				if isRequestScopedStop(action, okAction) {
+				if isRequestStopError(bootstrapErr) || isRequestScopedStop(action, okAction) {
 					return nil, wrapRequestStopError(bootstrapErr)
 				}
 				lastErr = bootstrapErr
@@ -409,7 +412,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				}
 				continue
 			}
-			if isRequestInvalidError(bootstrapErr) {
+			if isRequestStopError(bootstrapErr) || isRequestInvalidError(bootstrapErr) {
 				rerr := resultErrorFromError(bootstrapErr)
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
 				result.RetryAfter = retryAfterFromError(bootstrapErr)

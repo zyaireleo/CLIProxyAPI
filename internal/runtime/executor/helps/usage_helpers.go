@@ -589,6 +589,19 @@ func (r *UsageReporter) publishAttemptRecord(ctx context.Context, record usage.R
 }
 
 func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) {
+	if guard := cliproxyexecutor.AntigravityGuardFromContext(ctx); guard != nil && record.Provider == "antigravity" && cliproxyexecutor.IsAntigravityGuardModel(record.Model) {
+		record.GatewayTraceID = guard.GatewayTraceID()
+		record.FailureClass = record.Fail.Code
+		record.AttemptsUsed, record.RetryExhausted = guard.Attempts(), guard.Attempts() >= 2
+		if guard.PolicyRejected() && record.FailureClass == "" {
+			record.FailureClass = cliproxyexecutor.GuardClassPolicy
+		}
+		switch record.FailureClass {
+		case cliproxyexecutor.GuardClassAmbiguous429, cliproxyexecutor.GuardClassPolicy, cliproxyexecutor.GuardClassBudget, "upstream_rate_limited":
+			record.HealthEffect = cliproxyexecutor.GuardHealthNeutral
+		}
+	}
+
 	record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
 	usage.PublishRecord(ctx, record)
 }
@@ -658,10 +671,15 @@ func failFromErrors(errs ...error) usage.Failure {
 				body = string(responseBody)
 			}
 		}
-		return usage.Failure{
+		fail := usage.Failure{
 			Body:       body,
 			StatusCode: clienterror.HTTPStatusFromError(err),
 		}
+		var guardErr *cliproxyexecutor.AntigravityGuardError
+		if errors.As(err, &guardErr) {
+			fail.Code = guardErr.Class
+		}
+		return fail
 	}
 	return usage.Failure{}
 }

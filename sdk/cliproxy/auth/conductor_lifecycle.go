@@ -209,6 +209,15 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	auth.Success = existing.Success
 	auth.Failed = existing.Failed
 	auth.recentRequests = existing.recentRequests
+	auth.HealthSuccess, auth.HealthFailed, auth.NeutralResults = existing.HealthSuccess, existing.HealthFailed, existing.NeutralResults
+	auth.recentHealthRequests = existing.recentHealthRequests
+	auth.AdmissionBackoffs = nil
+	if existing.AdmissionBackoffs != nil {
+		auth.AdmissionBackoffs = make(map[string]AdmissionBackoff, len(existing.AdmissionBackoffs))
+		for key, state := range existing.AdmissionBackoffs {
+			auth.AdmissionBackoffs[key] = state
+		}
+	}
 	if auth.Generation <= existing.Generation {
 		auth.Generation = existing.Generation + 1
 	} else {

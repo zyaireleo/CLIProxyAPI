@@ -684,6 +684,11 @@ type HostRecentRequestEntry struct {
 
 // HostAuthFileEntry describes one credential exposed through host auth callbacks.
 type HostAuthFileEntry struct {
+	// Health counters exclude neutral request/admission failures; raw counters remain unchanged.
+	HealthSuccess        int64                    `json:"health_success"`
+	HealthFailed         int64                    `json:"health_failed"`
+	NeutralResults       int64                    `json:"neutral_results"`
+	RecentHealthRequests []HostRecentRequestEntry `json:"recent_health_requests"`
 	// ID identifies the credential record.
 	ID string `json:"id,omitempty"`
 	// AuthIndex is the stable runtime credential index.
@@ -1402,6 +1407,11 @@ type ManagementResponse struct {
 
 // UsageRecord describes request usage and billing metadata.
 type UsageRecord struct {
+	GatewayTraceID string `json:"GatewayTraceID,omitempty"`
+	FailureClass   string `json:"FailureClass,omitempty"`
+	HealthEffect   string `json:"HealthEffect,omitempty"`
+	AttemptsUsed   int    `json:"AttemptsUsed,omitempty"`
+	RetryExhausted bool   `json:"RetryExhausted,omitempty"`
 	// Provider identifies the upstream provider.
 	Provider string
 	// BaseURL is the upstream base URL configured for the request/credential when available.
@@ -1451,6 +1461,8 @@ type UsageRecord struct {
 
 // UsageFailure describes an upstream or executor failure.
 type UsageFailure struct {
+	// Code carries internal request outcome classification.
+	Code string
 	// StatusCode is the HTTP status code associated with the failure.
 	StatusCode int
 	// Body contains the failure response body or message.

@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -358,6 +359,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		return nil, nil, errChan
 	}
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
+	ctx = h.AuthManager.WithAntigravity429Guard(ctx, providers, req, opts)
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
@@ -533,6 +535,10 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 
 	bootstrapEligible := func(err error) bool {
+		var stop interface{ IsRequestStop() bool }
+		if errors.As(err, &stop) && stop.IsRequestStop() {
+			return false
+		}
 		status := statusFromError(err)
 		if status == 0 {
 			return true

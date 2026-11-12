@@ -821,6 +821,19 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 }
 
 func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, blockReason, time.Time) {
+	blocked, reason, until := isAuthHealthBlockedForModel(auth, model, now)
+	if blocked {
+		return blocked, reason, until
+	}
+	if auth != nil {
+		if pause, ok := auth.AdmissionBackoffs[canonicalModelKey(model)]; ok && pause.Until.After(now) {
+			return true, blockReasonOther, pause.Until
+		}
+	}
+	return false, blockReasonNone, time.Time{}
+}
+
+func isAuthHealthBlockedForModel(auth *Auth, model string, now time.Time) (bool, blockReason, time.Time) {
 	if auth == nil {
 		return true, blockReasonOther, time.Time{}
 	}

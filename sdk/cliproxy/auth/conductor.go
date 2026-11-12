@@ -44,6 +44,14 @@ type ExecutionSessionCloser interface {
 
 // Result captures execution outcome used to adjust auth state.
 type Result struct {
+	FailureClass   string
+	HealthEffect   string
+	AttemptsUsed   int
+	RetryExhausted bool
+	// ExecutionSeq orders generation attempts to reject stale admission resets.
+	ExecutionSeq uint64
+	// CompletedResponse excludes partial streams and count-tokens observations.
+	CompletedResponse bool
 	// AuthID references the auth that produced this result.
 	AuthID string
 	// Provider is copied for convenience when emitting hooks.
