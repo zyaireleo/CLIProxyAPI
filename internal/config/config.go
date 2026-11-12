@@ -12,6 +12,8 @@ type ServerResponseCompression = ResponseCompressionConfig
 
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
+	// Antigravity429Guard is opt-in and requires the trusted gateway contract.
+	Antigravity429Guard bool `yaml:"antigravity-429-guard" json:"antigravity-429-guard"`
 	// ServerResponseCompression is the JSON-visible mirror of the downstream
 	// response compression settings (YAML: server.response-compression).
 	ServerResponseCompression ResponseCompressionConfig `yaml:"-" json:"response-compression"`

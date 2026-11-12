@@ -1221,6 +1221,19 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 }
 
 func isAuthBlockedForModelForRequest(ctx context.Context, auth *Auth, model string, now time.Time, clientHeaders ...http.Header) (bool, blockReason, time.Time) {
+	blocked, reason, until := isAuthHealthBlockedForModelForRequest(ctx, auth, model, now, clientHeaders...)
+	if blocked {
+		return blocked, reason, until
+	}
+	if auth != nil {
+		if pause, ok := auth.AdmissionBackoffs[canonicalModelLookupKey(model)]; ok && pause.Until.After(now) {
+			return true, blockReasonOther, pause.Until
+		}
+	}
+	return false, blockReasonNone, time.Time{}
+}
+
+func isAuthHealthBlockedForModelForRequest(ctx context.Context, auth *Auth, model string, now time.Time, clientHeaders ...http.Header) (bool, blockReason, time.Time) {
 	if auth == nil {
 		return true, blockReasonOther, time.Time{}
 	}

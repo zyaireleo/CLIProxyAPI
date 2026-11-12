@@ -200,6 +200,10 @@ func isOpenAIImageExecutionOptions(opts cliproxyexecutor.Options) bool {
 }
 
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	ctx = m.withAntigravity429Guard(ctx, providers, req, opts)
+	if errContract := m.antigravityGuardContractError(ctx, providers, opts); errContract != nil {
+		return cliproxyexecutor.Response{}, errContract
+	}
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
 	ctx = WithCodexClientRequest(ctx, isOpenAIImageExecutionOptions(opts) || IsCodexClientRequest(ctx, opts.Headers))
@@ -335,6 +339,10 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	ctx = m.withAntigravity429Guard(ctx, providers, req, opts)
+	if errContract := m.antigravityGuardContractError(ctx, providers, opts); errContract != nil {
+		return nil, errContract
+	}
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
 	ctx = WithCodexClientRequest(ctx, isOpenAIImageExecutionOptions(opts) || IsCodexClientRequest(ctx, opts.Headers))
@@ -786,6 +794,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					m.MarkResult(execCtx, result)
 					errExec = annotateTrustedRetryAfterByHint(errExec)
 					syncPreferredUpstreamError(&upstreamErr, errExec)
+				}
+				if isRequestStopError(errExec) {
+					return cliproxyexecutor.Response{}, errExec
 				}
 				if okAction {
 					if isRequestScopedStop(action, okAction) {

@@ -376,7 +376,7 @@ func matchRequestScopedErrorAction(auth *Auth, err error, cfg *internalconfig.Co
 }
 
 func applyRequestScopedActionToResult(action string, okAction bool, result *Result) {
-	if !okAction || result == nil || result.Error == nil {
+	if !okAction || result == nil || result.Error == nil || isGuardNeutralClass(result.Error.Code) || result.Error.Code == antigravityGuardAuthenticationFailureCode {
 		return
 	}
 	if action == RequestScopedActionStop || action == RequestScopedActionContinue {
