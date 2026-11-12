@@ -24,6 +24,11 @@ const AutoServiceTier = "auto"
 
 // Record contains the usage statistics captured for a single provider request.
 type Record struct {
+	GatewayTraceID string `json:"GatewayTraceID,omitempty"`
+	FailureClass   string `json:"FailureClass,omitempty"`
+	HealthEffect   string `json:"HealthEffect,omitempty"`
+	AttemptsUsed   int    `json:"AttemptsUsed,omitempty"`
+	RetryExhausted bool   `json:"RetryExhausted,omitempty"`
 	// RequestID uniquely identifies this specific model execution instance (UUID v4).
 	RequestID string
 	// TraceID identifies the parent inbound HTTP request when available (8-character hex).

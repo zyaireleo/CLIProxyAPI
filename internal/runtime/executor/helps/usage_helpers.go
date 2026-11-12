@@ -636,6 +636,19 @@ func (r *UsageReporter) publishAttemptRecord(ctx context.Context, record usage.R
 }
 
 func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) {
+	if guard := cliproxyexecutor.AntigravityGuardFromContext(ctx); guard != nil && record.Provider == "antigravity" && cliproxyexecutor.IsAntigravityGuardModel(record.Model) {
+		record.GatewayTraceID = guard.GatewayTraceID()
+		record.FailureClass = record.Fail.Code
+		record.AttemptsUsed, record.RetryExhausted = guard.Attempts(), guard.Attempts() >= 2
+		if guard.PolicyRejected() && record.FailureClass == "" && record.Fail.StatusCode != http.StatusUnauthorized && record.Fail.StatusCode != http.StatusForbidden {
+			record.FailureClass = cliproxyexecutor.GuardClassPolicy
+		}
+		switch record.FailureClass {
+		case cliproxyexecutor.GuardClassAmbiguous429, cliproxyexecutor.GuardClassPolicy, cliproxyexecutor.GuardClassBudget, "upstream_rate_limited":
+			record.HealthEffect = cliproxyexecutor.GuardHealthNeutral
+		}
+	}
+
 	record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
 	if r != nil {
 		ctx = usage.WithCapturedIdentity(ctx, r.apiKey, r.accessProvider, r.isNativeKey)
@@ -767,7 +780,10 @@ func failFromErrorsWithRules(rules []internalconfig.RequestScopedErrorRule, errs
 			Body:       body,
 			StatusCode: clienterror.HTTPStatusFromError(err),
 		}
-		if truncatedErr, ok := errors.AsType[cliproxyexecutor.StreamTruncatedError](err); ok && truncatedErr != nil && truncatedErr.IsStreamTruncated() {
+		var guardErr *cliproxyexecutor.AntigravityGuardError
+		if errors.As(err, &guardErr) && guardErr.Class != "" {
+			fail.Code = guardErr.Class
+		} else if truncatedErr, ok := errors.AsType[cliproxyexecutor.StreamTruncatedError](err); ok && truncatedErr != nil && truncatedErr.IsStreamTruncated() {
 			fail.Code = usage.FailureStreamTruncatedCode
 		} else if action, okAction := cliproxyauth.MatchRequestScopedErrorRules(rules, err); okAction {
 			if action == cliproxyauth.RequestScopedActionStop || action == cliproxyauth.RequestScopedActionContinue {

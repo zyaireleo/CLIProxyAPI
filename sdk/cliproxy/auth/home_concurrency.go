@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 const (
@@ -281,6 +282,20 @@ func verifyAccountedHomeConcurrencyIdentity(tuple homeConcurrencyTuple, auth *Au
 // SafeResponseHeaders returns trusted response headers only for concrete
 // retry/cooldown errors.
 func SafeResponseHeaders(err error) http.Header {
+	h := safeResponseRetryHeaders(err)
+	var guard *cliproxyexecutor.AntigravityGuardError
+	if errors.As(err, &guard) {
+		if h == nil {
+			h = make(http.Header)
+		}
+		for k, v := range guard.SafeResponseHeaders() {
+			h[k] = v
+		}
+	}
+	return h
+}
+
+func safeResponseRetryHeaders(err error) http.Header {
 	// An exhausted Home round owns the aggregated multi-credential deadline;
 	// a per-attempt trusted annotation deeper in the chain must not replace it.
 	var exhausted *homeRetryRoundExhaustedError
