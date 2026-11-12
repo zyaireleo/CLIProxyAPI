@@ -24,6 +24,11 @@ import (
 
 // ExecuteStream performs a streaming request to the Antigravity API.
 func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	defer func() {
+		if cliproxyexecutor.IsAntigravityGuardModel(thinking.ParseSuffix(req.Model).ModelName) {
+			err = cliproxyexecutor.WrapAntigravityGuardFailure(ctx, err, "")
+		}
+	}()
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
 	}
@@ -136,7 +141,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	}
 	translated = requestPayload
 	reporter.SetTranslatedRequestMetadata(requestPayload, to.String())
-	httpResp, errDo := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "generate_stream").Do(httpReq)
+	httpResp, errDo := helps.WithAntigravityAttemptBudget(ctx, helps.WithAntigravityHTTPClientTrace(httpClient, auth, "generate_stream"), baseModel).Do(httpReq)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
@@ -165,7 +170,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			err = errRead
 			return nil, err
 		}
-		if httpResp.StatusCode == http.StatusTooManyRequests {
+		if httpResp.StatusCode == http.StatusTooManyRequests && !(cliproxyexecutor.AntigravityGuardFromContext(ctx) != nil && cliproxyexecutor.IsAntigravityGuardModel(baseModel)) {
 			decision := decideAntigravity429(bodyBytes)
 
 			switch decision.kind {
@@ -191,7 +196,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			// Report the upstream failure rather than the cleanup failure.
 			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
 		}
-		err = newAntigravityStatusErr(httpResp.StatusCode, bodyBytes)
+		err = helps.GuardAntigravityFailure(ctx, baseModel, newAntigravityStatusErr(httpResp.StatusCode, bodyBytes), httpResp.StatusCode, bodyBytes, httpResp.Header)
 		return nil, err
 	}
 
@@ -297,12 +302,13 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			if payload == nil {
 				continue
 			}
+			helps.ObserveAntigravityPolicy(ctx, baseModel, payload)
 			if errorResult := ojson.GetBytesNoCopy(payload, "error"); errorResult.Exists() {
 				statusCode := int(errorResult.Get("code").Int())
 				if statusCode < http.StatusBadRequest || statusCode > 599 {
 					statusCode = http.StatusBadGateway
 				}
-				streamErr = newAntigravityStatusErr(statusCode, payload)
+				streamErr = helps.GuardAntigravityFailure(ctx, baseModel, newAntigravityStatusErr(statusCode, payload), statusCode, payload, httpResp.Header)
 				stopDeliverySupport()
 				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 				select {

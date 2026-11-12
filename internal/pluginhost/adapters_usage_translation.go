@@ -628,6 +628,11 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 		Latency:              record.Latency,
 		TTFT:                 record.TTFT,
 		Failed:               record.Failed,
+		GatewayTraceID:       record.GatewayTraceID,
+		FailureClass:         record.FailureClass,
+		HealthEffect:         record.HealthEffect,
+		AttemptsUsed:         record.AttemptsUsed,
+		RetryExhausted:       record.RetryExhausted,
 		Failure: pluginapi.UsageFailure{
 			StatusCode: record.Fail.StatusCode,
 			Body:       record.Fail.Body,

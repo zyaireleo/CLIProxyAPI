@@ -143,8 +143,13 @@ type Auth struct {
 	// LastRenewalVerifiedAt records when the current credential version last completed a token refresh.
 	LastRenewalVerifiedAt time.Time `json:"-"`
 
-	Success int64 `json:"-"`
-	Failed  int64 `json:"-"`
+	HealthSuccess        int64                       `json:"-"`
+	HealthFailed         int64                       `json:"-"`
+	NeutralResults       int64                       `json:"-"`
+	AdmissionBackoffs    map[string]AdmissionBackoff `json:"-"`
+	recentHealthRequests recentRequestRing           `json:"-"`
+	Success              int64                       `json:"-"`
+	Failed               int64                       `json:"-"`
 
 	// cooldownRecordedSeq is the execution sequence watermark captured when
 	// the current auth-level cooldown was recorded. Successes from executions
@@ -514,6 +519,12 @@ func (a *Auth) Clone() *Auth {
 		copyAuth.ModelStates = make(map[string]*ModelState, len(a.ModelStates))
 		for key, state := range a.ModelStates {
 			copyAuth.ModelStates[key] = state.Clone()
+		}
+	}
+	if a.AdmissionBackoffs != nil {
+		copyAuth.AdmissionBackoffs = make(map[string]AdmissionBackoff, len(a.AdmissionBackoffs))
+		for k, v := range a.AdmissionBackoffs {
+			copyAuth.AdmissionBackoffs[k] = v
 		}
 	}
 	copyAuth.Runtime = a.Runtime

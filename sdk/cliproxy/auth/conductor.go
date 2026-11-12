@@ -64,6 +64,10 @@ type AuthExecutionSessionCloser interface {
 
 // Result captures execution outcome used to adjust auth state.
 type Result struct {
+	FailureClass   string
+	HealthEffect   string
+	AttemptsUsed   int
+	RetryExhausted bool
 	// AuthID references the auth that produced this result.
 	AuthID string
 	// Provider is copied for convenience when emitting hooks.

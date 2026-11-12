@@ -927,6 +927,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	result = annotateAntigravityGuardResult(ctx, result)
 	if m != nil {
 		if policy := m.ResultPolicy(); policy != nil {
 			result = policy.ApplyResultPolicy(ctx, result)
@@ -935,6 +936,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 	}
+	result = annotateAntigravityGuardResult(ctx, result)
 	modelKey := canonicalModelKey(result.Model)
 
 	var authSnapshot *Auth
@@ -990,6 +992,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		} else {
 			auth.Failed++
 		}
+		auth.observeGuardHealth(result, modelKey, now)
 		wasTerminalUnauthorized := hasUnauthorizedAuthFailure(auth)
 
 		// retainModelCooldown pins a still-live model cooldown against a success
@@ -1008,7 +1011,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		retainAuthCooldown := modelKey == "" && !wasTerminalUnauthorized && result.ExecutionSeq > 0 &&
 			isAuthActiveCooldown(auth, now) && auth.cooldownRecordedSeq > 0 && result.ExecutionSeq <= auth.cooldownRecordedSeq
 
-		if result.Success {
+		if result.HealthEffect == cliproxyexecutor.GuardHealthNeutral {
+			// Raw observations remain visible; neutral outcomes do not mutate credential health.
+		} else if result.Success {
 			if result.CompletedResponse && !result.SkipQuotaObservation && !wasTerminalUnauthorized && !(auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now)) && !retainModelCooldown && !retainAuthCooldown {
 				auth.InferenceVerified = true
 				auth.LastInferenceVerifiedAt = now
@@ -1479,7 +1484,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		auth.Generation++
 		auth.UpdatedAt = now
 
-		if !result.SkipQuotaObservation {
+		if !result.SkipQuotaObservation && result.HealthEffect != cliproxyexecutor.GuardHealthNeutral {
 			auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
 			if modelState != nil {
 				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
@@ -1538,7 +1543,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 }
 
 func (m *Manager) updateSessionAffinity(result Result) {
-	if m == nil {
+	if m == nil || result.HealthEffect == cliproxyexecutor.GuardHealthNeutral {
 		return
 	}
 	sel := m.Selector()
@@ -2166,6 +2171,8 @@ func resultErrorFromError(err error) *Error {
 		resultErr.HTTPStatus = statusCodeFromError(err)
 	}
 	switch {
+	case isGuardNeutralClass(resultErr.Code):
+		// Preserve the structured classification across generic request-error rules.
 	case isCredentialScopedError(err):
 		// A credential-scoped failure always stays on the credential quota path;
 		// normalize conflicting model-only or cooldown-skipping codes so MarkResult
@@ -2222,7 +2229,7 @@ func shouldSkipCredentialCooldown(err *Error) bool {
 	if err != nil && err.Code == ErrorCodeForceCooldown {
 		return false
 	}
-	return isRequestScopedResultError(err) || isConnectionLifecycleResultError(err) || isTransientTransportResultError(err) || isStreamTruncatedResultError(err)
+	return (err != nil && isGuardNeutralClass(err.Code)) || isRequestScopedResultError(err) || isConnectionLifecycleResultError(err) || isTransientTransportResultError(err) || isStreamTruncatedResultError(err)
 }
 
 // isConnectionLifecycleError reports transport/session lifecycle failures that must
