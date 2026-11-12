@@ -31,6 +31,7 @@ jobs:
       - name: Record exact source and toolchain
         run: |
           mkdir -p "$EVIDENCE_DIR"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(go env GOVERSION)" = go1.26.10
           go version | tee "$EVIDENCE_DIR/go-version.txt"
           git rev-parse HEAD HEAD^{tree} | tee "$EVIDENCE_DIR/source.txt"
