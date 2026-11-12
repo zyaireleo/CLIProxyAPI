@@ -1,0 +1,62 @@
+name: cpa1-admission-diagnostics
+
+on:
+  push:
+    branches:
+      - fix/cpa1-admission-diagnostics-20261112
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+      CGO_ENABLED: '1'
+      EVIDENCE_DIR: ${{ runner.temp }}/cpa1-admission-evidence
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.10'
+          cache: true
+      - name: Record exact source and toolchain
+        run: |
+          mkdir -p "$EVIDENCE_DIR"
+          test "$(go env GOVERSION)" = go1.26.10
+          go version | tee "$EVIDENCE_DIR/go-version.txt"
+          git rev-parse HEAD HEAD^{tree} | tee "$EVIDENCE_DIR/source.txt"
+          sha256sum go.mod go.sum | tee "$EVIDENCE_DIR/module-checksums.txt"
+      - name: Admission and credential protection regressions
+        run: |
+          go test -count=1 ./sdk/cliproxy/auth ./sdk/cliproxy/executor -run 'TestAdmission|TestAntigravity|TestManagerPluginScheduler' 2>&1 | tee "$EVIDENCE_DIR/targeted-core-tests.txt"
+          go test -count=1 ./internal/api/handlers/management -run 'TestListCredentialsAdmission|TestListAuthFiles' 2>&1 | tee "$EVIDENCE_DIR/targeted-management-tests.txt"
+      - name: Full repository tests
+        run: go test -count=1 ./... 2>&1 | tee "$EVIDENCE_DIR/full-tests.txt"
+      - name: Race checks
+        run: go test -race -count=1 ./sdk/cliproxy/auth ./sdk/cliproxy/executor ./internal/api/handlers/management 2>&1 | tee "$EVIDENCE_DIR/race-tests.txt"
+      - name: Build and inspect CI artifact
+        run: |
+          test -z "$(git status --porcelain)"
+          go build -trimpath -o "$EVIDENCE_DIR/cpa1-diagnostics-ci" ./cmd/server
+          go version -m "$EVIDENCE_DIR/cpa1-diagnostics-ci" | tee "$EVIDENCE_DIR/buildinfo.txt"
+          sha256sum "$EVIDENCE_DIR/cpa1-diagnostics-ci" | tee "$EVIDENCE_DIR/artifact-sha256.txt"
+          file "$EVIDENCE_DIR/cpa1-diagnostics-ci" | tee "$EVIDENCE_DIR/artifact-platform.txt"
+          readelf --version-info "$EVIDENCE_DIR/cpa1-diagnostics-ci" > "$EVIDENCE_DIR/glibc-requirements.txt"
+          ldd "$EVIDENCE_DIR/cpa1-diagnostics-ci" > "$EVIDENCE_DIR/dynamic-dependencies.txt"
+      - name: Preserve validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpa1-admission-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/cpa1-admission-evidence/
+          if-no-files-found: warn
+          retention-days: 3

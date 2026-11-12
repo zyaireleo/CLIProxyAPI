@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	log "github.com/sirupsen/logrus"
 )
 
 func (m *Manager) SetPluginScheduler(scheduler PluginScheduler) {
@@ -875,6 +876,10 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 	availableByPriority := make(map[int][]*Auth)
 	cooldownCount := 0
 	unauthorizedCount := 0
+	admissionCount := 0
+	disabledCount := 0
+	healthOtherCount := 0
+	earliestSource := "none"
 	var earliest time.Time
 	for _, candidate := range auths {
 		checkModel := m.selectionModelForAuth(candidate, routeModel)
@@ -884,11 +889,22 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 			availableByPriority[priority] = append(availableByPriority[priority], candidate)
 			continue
 		}
+		exclusionSource := "health_or_other"
 		if reason == blockReasonCooldown {
 			cooldownCount++
+			exclusionSource = "quota_cooldown"
+		} else if reason == blockReasonDisabled {
+			disabledCount++
+			exclusionSource = "disabled"
+		} else if healthBlocked, _, _ := isAuthHealthBlockedForModelForRequest(ctx, candidate, checkModel, now, clientHeaders...); !healthBlocked {
+			admissionCount++
+			exclusionSource = "admission_backoff"
+		} else {
+			healthOtherCount++
 		}
 		if reason != blockReasonDisabled && next.After(now) && (earliest.IsZero() || next.Before(earliest)) {
 			earliest = next
+			earliestSource = exclusionSource
 		}
 		if hasUnauthorizedAuthFailure(candidate) {
 			unauthorizedCount++
@@ -896,6 +912,24 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 	}
 
 	if len(availableByPriority) == 0 {
+		var recoveryAt string
+		var remainingSeconds int64
+		if earliest.After(now) {
+			recoveryAt = earliest.UTC().Format(time.RFC3339Nano)
+			remaining := earliest.Sub(now)
+			remainingSeconds = int64(remaining / time.Second)
+			if remaining%time.Second != 0 {
+				remainingSeconds++
+			}
+		}
+		logEntryWithRequestID(ctx).WithFields(log.Fields{
+			"event": "auth_selection_unavailable", "model": routeModel, "provider": provider,
+			"candidate_count": len(auths), "admission_count": admissionCount,
+			"quota_cooldown_count": cooldownCount, "disabled_count": disabledCount,
+			"health_or_other_count": healthOtherCount, "earliest_recovery_source": earliestSource,
+			"earliest_recovery_at": recoveryAt, "retry_after_seconds": remainingSeconds,
+			"cached_error_context": "last_observed_upstream_error_not_all_candidates",
+		}).Warn("auth selection unavailable")
 		lastCandidateErr := latestCandidateErrorForModel(auths, func(candidate *Auth) string {
 			return m.selectionModelForAuth(candidate, routeModel)
 		})
@@ -1339,6 +1373,10 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 		return nil, false, nil
 	}
 	if resp.Reject {
+		logEntryWithRequestID(ctx).WithFields(log.Fields{
+			"event": "plugin_scheduler_rejected", "model": model,
+			"provider": provider, "candidate_count": len(candidates),
+		}).Warn("plugin scheduler rejected candidate selection")
 		rejectCode := strings.TrimSpace(resp.RejectCode)
 		if rejectCode == "" {
 			rejectCode = "auth_unavailable"

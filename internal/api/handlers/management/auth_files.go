@@ -149,6 +149,12 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 				if cooldownsKnown {
 					entry["cooldowns"] = coreauth.CooldownSnapshotForAuth(auth, observedAt)
 				}
+				if quota.v8 {
+					entry["admission_pauses"] = nil
+					if cooldownsKnown {
+						entry["admission_pauses"] = coreauth.AdmissionPauseSnapshotForAuth(auth, observedAt)
+					}
+				}
 				files = append(files, entry)
 			}
 		}
@@ -164,6 +170,12 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 			entry["cooldowns"] = nil
 			if cooldownsKnown {
 				entry["cooldowns"] = coreauth.CooldownSnapshotForAuth(auth, observedAt)
+			}
+			if quota.v8 {
+				entry["admission_pauses"] = nil
+				if cooldownsKnown {
+					entry["admission_pauses"] = coreauth.AdmissionPauseSnapshotForAuth(auth, observedAt)
+				}
 			}
 			files = append(files, entry)
 		}
