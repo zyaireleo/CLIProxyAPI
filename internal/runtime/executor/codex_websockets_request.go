@@ -81,7 +81,8 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		ginHeaders = ginCtx.Request.Header.Clone()
 	}
 
-	if codexUseSIWCForRequest(ctx, auth, clientHeaders...) {
+	useSIWC := codexUseSIWCForRequest(ctx, auth, clientHeaders...)
+	if useSIWC {
 		deleteHeaderCaseInsensitive(headers, "conversation_id")
 		ensureCodexWebsocketSessionHeader(headers, ginHeaders, "")
 		if sessionID := codexSessionHeaderValue(headers); sessionID != "" {
@@ -104,6 +105,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		}
 		req := (&http.Request{Header: headers}).WithContext(ctx)
 		util.ApplyCustomHeadersFromAttrs(req, attrs, ginHeaders)
+		applyCodexDeviceFingerprintRequestHeaders(headers, cfg, auth, useSIWC)
 		return headers
 	}
 
@@ -170,6 +172,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	req := (&http.Request{Header: headers}).WithContext(ctx)
 	util.ApplyCustomHeadersFromAttrs(req, attrs, ginHeaders)
 	applyCodexCloakingHeaders(headers, cfg, auth)
+	applyCodexDeviceFingerprintRequestHeaders(headers, cfg, auth, useSIWC)
 
 	return headers
 }

@@ -107,6 +107,11 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		body = applyCodexSIWCWebsocketBodyRules(body, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
 	}
 	body = finalizePayload(body)
+	deviceID := ""
+	if dev, ok := resolveCodexDeviceIdentity(e.cfg, auth, useSIWC); ok {
+		deviceID = dev.InstallationID
+		body = applyCodexDeviceFingerprintBody(body, deviceID, dev.AllowInject)
+	}
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, nativeRequest, opts.Headers)
 	applyCodexRoutingHint(ctx, wsHeaders, auth, baseModel, body, opts.Headers)
@@ -160,6 +165,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	dialCtx := ctx
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
 		conn, closer = existingWebsocketSessionConn(sess, authID, wsURL, executionProxyURL(ctx, sess.effectiveConfig(authID, e.cfg), auth), useSIWC)
+		if conn != nil && !websocketSessionDeviceKeyMatches(sess, conn, deviceID) {
+			conn, closer = nil, nil
+		}
 		if conn == nil {
 			return resp, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
 		}

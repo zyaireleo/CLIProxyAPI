@@ -375,6 +375,12 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
 				return false
 			}
+			// Defensive: the handshake pinned the device at stream start. A
+			// different device id here means auth state changed in place.
+			if prepared.deviceID != initial.deviceID {
+				fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
+				return false
+			}
 			payload = frameCodexWebsocketRequestBody(prepared.clientBody)
 			metadataMu.Lock()
 			if len(pending) >= 16 {
@@ -485,6 +491,9 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 						payload = thinking.StripConfigurationUpdates(payload)
 					}
 					payload = helps.NewPayloadFinalizer(e.cfg, "codex-websockets", thinking.ParseSuffix(req.Model).ModelName, "codex", "", payload, steerReq, steerOpts)(payload)
+					if initial.deviceID != "" {
+						payload = applyCodexDeviceFingerprintBody(payload, initial.deviceID, false)
+					}
 					payload, _ = sjson.SetBytes(payload, "type", "response.steer")
 					parent := gjson.GetBytes(payload, "previous_response_id").String()
 					metadataMu.Lock()

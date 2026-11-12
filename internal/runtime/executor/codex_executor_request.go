@@ -153,9 +153,13 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	}
 	rawJSON = helps.SanitizeCodexInputItemIDs(rawJSON)
 	rawJSON = helps.FinalizePayload(ctx, rawJSON)
+	useSIWC := codexUseSIWCForRequest(ctx, auth, headers)
+	if dev, ok := resolveCodexDeviceIdentity(e.cfg, auth, useSIWC); ok && codexDeviceFPBodyEligible(url) {
+		rawJSON = applyCodexDeviceFingerprintBody(rawJSON, dev.InstallationID, dev.AllowInject)
+	}
 	wireBody := rawJSON
 	if e.cfg != nil && e.cfg.Codex.UpstreamRequestCompression && auth != nil &&
-		!codexAuthUsesAPIKey(auth) && !codexUseSIWCForRequest(ctx, auth, headers) &&
+		!codexAuthUsesAPIKey(auth) && !useSIWC &&
 		len(rawJSON) >= e.cfg.Codex.RequestCompressionMinBytes() {
 		parsedURL, errParse := neturl.Parse(url)
 		if errParse == nil && strings.EqualFold(parsedURL.Hostname(), "chatgpt.com") && strings.HasPrefix(parsedURL.Path, "/backend-api/codex/") {
@@ -431,6 +435,7 @@ func applyCodexHeadersWithSIWC(r *http.Request, auth *cliproxyauth.Auth, useSIWC
 			attrs = auth.Attributes
 		}
 		util.ApplyCustomHeadersFromAttrs(r, attrs, ginHeaders)
+		applyCodexDeviceFingerprintRequestHeaders(r.Header, cfg, auth, useSIWC)
 		return
 	}
 
@@ -475,6 +480,7 @@ func applyCodexHeadersWithSIWC(r *http.Request, auth *cliproxyauth.Auth, useSIWC
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs, ginHeaders)
 	applyCodexCloakingHeaders(r.Header, cfg, auth)
+	applyCodexDeviceFingerprintRequestHeaders(r.Header, cfg, auth, useSIWC)
 }
 
 const codexRoutingHintHeader = "X-Codex-Routing-Hint"

@@ -103,6 +103,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	dialCtx := ctx
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
 		conn, closer = existingWebsocketSessionConn(sess, authID, wsURL, executionProxyURL(ctx, sess.effectiveConfig(authID, e.cfg), auth), useSIWC)
+		if conn != nil && !websocketSessionDeviceKeyMatches(sess, conn, prepared.deviceID) {
+			conn, closer = nil, nil
+		}
 		if conn == nil {
 			unlockStreamSession()
 			if cliproxyexecutor.DownstreamWebsocket(ctx) && sess != nil {
@@ -846,6 +849,7 @@ type codexWebsocketPrepared struct {
 	wsURL                string
 	wsHeaders            http.Header
 	useSIWC              bool
+	deviceID             string // converged installation id written into the body; "" when device fingerprint mode is off
 	replayScope          codexReasoningReplayScope
 	optimizeMultiAgentV2 bool
 	multiAgentV2Conflict bool
@@ -927,6 +931,11 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		body = applyCodexSIWCWebsocketBodyRules(body, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
 	}
 	body = finalizePayload(body)
+	deviceID := ""
+	if dev, ok := resolveCodexDeviceIdentity(e.cfg, auth, useSIWC); ok {
+		deviceID = dev.InstallationID
+		body = applyCodexDeviceFingerprintBody(body, deviceID, dev.AllowInject)
+	}
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, opts.Headers)
 	applyCodexRoutingHint(ctx, wsHeaders, auth, baseModel, body, opts.Headers)
 	applyModelHeaderOverrides(wsHeaders, baseModel)
@@ -941,6 +950,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		wsURL:                wsURL,
 		wsHeaders:            wsHeaders,
 		useSIWC:              useSIWC,
+		deviceID:             deviceID,
 		replayScope:          replayScope,
 		optimizeMultiAgentV2: optimizeMultiAgentV2,
 		multiAgentV2Conflict: multiAgentV2Conflict,
